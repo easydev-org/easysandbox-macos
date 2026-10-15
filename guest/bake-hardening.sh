@@ -68,6 +68,14 @@ if id docker >/dev/null 2>&1; then
   sudo -u docker defaults -currentHost write com.apple.keyboardtype keyboardtype -int 40 2>/dev/null || true
 fi
 
+# Keyboard Setup Assistant (KSA) launches at login and is MODAL: it swallows
+# every keystroke, so the guest looks like "keyboard input does not work" (and
+# it takes two presses per character to get past it). Pre-setting
+# com.apple.keyboardtype is NOT enough on this image, so disable the assistant
+# outright. SIP is off in this image, so the system app is writable.
+if [ -d /System/Library/CoreServices/KeyboardSetupAssistant.app ]; then
+  mv /System/Library/CoreServices/KeyboardSetupAssistant.app      /System/Library/CoreServices/KeyboardSetupAssistant.app.disabled 2>/dev/null || true
+fi
 echo '== 4. no window restore / no reopen =='
 defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false 2>/dev/null || true
 defaults write com.apple.loginwindow TALLogoutSucceeded -bool false 2>/dev/null || true

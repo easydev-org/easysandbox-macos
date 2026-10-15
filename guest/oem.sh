@@ -123,6 +123,14 @@ PLIST
       done
     done
     killall -9 tccd 2>/dev/null || true
+  # Disable the Keyboard Setup Assistant. It launches at login and is MODAL:
+  # it swallows every keystroke, so the guest looks like "keyboard input does
+  # not work" (each character needs two presses to get past the dialog).
+  # Pre-setting com.apple.keyboardtype is not sufficient on this image, and SIP
+  # is off, so just retire the app. Idempotent (no-op once renamed).
+  if [ -d /System/Library/CoreServices/KeyboardSetupAssistant.app ]; then
+    mv /System/Library/CoreServices/KeyboardSetupAssistant.app        /System/Library/CoreServices/KeyboardSetupAssistant.app.disabled 2>/dev/null || true
+  fi
     # Kick the daemon into the Aqua session. ROOT ONLY: `launchctl asuser`
     # requires root, and running this loop as `docker` blocked oem.sh (and
     # therefore the worker, which oem.sh execs afterwards) for 2 minutes.
