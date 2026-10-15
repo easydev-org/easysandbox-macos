@@ -1,0 +1,4 @@
+# The 256MB boot image is a binary artifact; store it in LFS so the repo stays
+# clonable. opencore.iso / vmh.zip are small enough to track directly.
+xcode/support/boot.img filter=lfs diff=lfs merge=lfs -text
+*.qcow2 filter=lfs diff=lfs merge=lfs -text

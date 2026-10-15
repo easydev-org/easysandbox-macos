@@ -1,0 +1,6 @@
+# The multi-GB guest disk is NOT stored here: it is fetched at build/run time
+# from the artifact-published golden base (GOLDEN_DISK_URL) — see golden-disk.sh.
+# Everything else the image ships IS tracked, including xcode/support/boot.img
+# (stored via Git LFS, see .gitattributes) and vendor/opencore/*.
+disk/data.qcow2
+*/disk/data.qcow2

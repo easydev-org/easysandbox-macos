@@ -1,0 +1,138 @@
+# agent-worker macOS sandbox — self-owned runtime, pre-baked disk, boot only.
+#
+# No upstream sandbox image is referenced. The runtime is the generic
+# qemux/qemu Debian base plus a vendored copy of the macOS boot scripts
+# (vendor/run, taken once from the upstream project and kept here), the macOS
+# firmware/identity assets, and the token/worker bridge. The upstream project's
+# installer and its tooling are not part of this image at all.
+#
+# Only the boot path runs: the guest disk ships installed, so nothing downloads
+# or installs macOS. `openCoreSignature()` still hashes /opencore.iso, /vmh.zip
+# and /assets/config.plist, so those three stay even though the boot image is
+# pre-built and reused.
+ARG REGISTRY=git.agent.svc.cluster.local/root
+FROM ${REGISTRY}/qemu:750
+
+# In-cluster artifact mirror for apt (fast, reachable from the build node); set
+# via --build-arg. When empty, the image's own sources are used.
+ARG ARTIFACT=""
+
+# The build proxy must NOT be used for the in-cluster artifact mirror (it has no
+# route to it -> 404). This mirrors the desktop images' NO_PROXY.
+ENV NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,artifact.worker.svc.cluster.local \
+    no_proxy=localhost,127.0.0.1,.svc.cluster.local,.svc,artifact.worker.svc.cluster.local
+
+# --- OpenCore boot-image rebuild tools -------------------------------------
+# The boot image is normally reused as-is, but a change to /assets/config.plist
+# (e.g. csr-active-config to disable SIP for computer-use) changes
+# openCoreSignature() and forces boot.sh to REBUILD the OpenCore image, which
+# needs: xmlstarlet (plist edit/validate/select), xxd (ROM hex->binary),
+# mtools (mformat/mcopy the EFI FAT image) and 7z (unpack opencore.iso /
+# vmh.zip). The upstream installer image carries these; this boot-only image
+# must add them.
+RUN set -eux; \
+    echo "apt via ${ARTIFACT:-image sources}"; \
+    if [ -n "${ARTIFACT:-}" ]; then \
+      rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list; \
+      printf 'deb [trusted=yes] %s/artifacts/debian/debian trixie main\n' "${ARTIFACT}" > /etc/apt/sources.list.d/artifact.list; \
+    fi; \
+    apt-get -o Acquire::Retries=10 update; \
+    for i in 1 2 3 4 5 6; do \
+      apt-get -o Acquire::Retries=10 install -y --no-install-recommends \
+        xmlstarlet mtools file zip ffmpeg \
+      && break || { echo "apt retry $i"; sleep 3; }; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+# --- vendored macOS runtime ------------------------------------------------
+# The boot scripts (entry/boot/cpu/disk/display/network/install/...).
+COPY --chmod=755 vendor/run/ /run/
+# Assets the boot path reads: the OpenCore config template, and the OpenCore
+# and VMHide archives whose hashes feed the boot-image signature.
+COPY --chmod=644 vendor/assets/config.plist /assets/config.plist
+COPY --chmod=600 vendor/opencore/opencore.iso /opencore.iso
+COPY --chmod=600 vendor/opencore/vmh.zip      /vmh.zip
+COPY --chmod=644 vendor/version /etc/version
+
+# --- pre-baked guest disk + boot state -------------------------------------
+# The guest is already installed. base.dmg (the macOS recovery/install media) is
+# deliberately not shipped: nothing installs macOS here, so it would be dead
+# weight. The boot image, firmware and machine identity are pre-built and are
+# reused as-is (their signature is unchanged, so boot.sh skips rebuilding them).
+#
+# EMBED_DISK=0 drops the (multi-GB) disk from the image; the disk is then
+# fetched at run time from the artifact-published golden base and a per-sandbox
+# overlay is created (see golden-disk.sh + GOLDEN_DISK_URL). Default 1 keeps the
+# historical embedded-disk image.
+ARG EMBED_DISK=1
+# The disk is written via a bind mount so it lands in EXACTLY ONE layer when
+# embedded (a plain `COPY` followed by a `RUN mv` would store it TWICE — the
+# multi-GB disk in two identical layers). With EMBED_DISK=0 nothing is written
+# (the disk is fetched at run time from GOLDEN_DISK_URL).
+RUN --mount=type=bind,source=disk/data.qcow2,target=/tmp/disk.qcow2 \
+    mkdir -p /storage/15 && if [ "${EMBED_DISK}" = "1" ]; then cp /tmp/disk.qcow2 /storage/15/data.qcow2; fi
+COPY disk/support/boot.img   /storage/15/boot.img
+COPY disk/support/boot.sig   /storage/15/boot.sig
+COPY disk/support/macos.id   /storage/15/macos.id
+COPY disk/support/macos.mac  /storage/15/macos.mac
+COPY disk/support/macos.mlb  /storage/15/macos.mlb
+COPY disk/support/macos.rom  /storage/15/macos.rom
+COPY disk/support/macos.sn   /storage/15/macos.sn
+COPY disk/support/macos.vars /storage/15/macos.vars
+# Extra copies of the boot support files OUTSIDE /storage, so a PVC mounted at
+# /storage (to persist ONLY the disk) does not hide them: start.sh copies these
+# back into /storage/15 when the PVC shadows them. Boot state is image-owned.
+COPY disk/support/boot.img   /opt/macboot/15/boot.img
+COPY disk/support/boot.sig   /opt/macboot/15/boot.sig
+COPY disk/support/macos.id   /opt/macboot/15/macos.id
+COPY disk/support/macos.mac  /opt/macboot/15/macos.mac
+COPY disk/support/macos.mlb  /opt/macboot/15/macos.mlb
+COPY disk/support/macos.rom  /opt/macboot/15/macos.rom
+COPY disk/support/macos.sn   /opt/macboot/15/macos.sn
+COPY disk/support/macos.vars /opt/macboot/15/macos.vars
+
+# --- agent-worker boot-fetch ----------------------------------------------
+# The guest launcher downloads the worker on every boot (nginx :8090 /worker):
+# a worker upgrade is an image change, never a golden rebake. There is NO disk
+# fallback — the container always serves it.
+# NOTE: xa11y is gone — a11y/input/capture are the easystream daemon's job.
+COPY --chmod=755 agent-worker-darwin /opt/agent-worker/agent-worker
+COPY --chmod=755 easystream-darwin /opt/agent-worker/easystream
+# The REAL launch logic. The on-disk loader (/Users/docker/bootstrap.sh, the
+# ONLY launch file on the golden disk) fetches this every boot, so ALL launch
+# behaviour is an image change (no golden-disk rebake).
+COPY --chmod=644 guest/oem.sh /opt/agent-worker/oem.sh
+
+# --- token/worker bridge (no sidecar) -------------------------------------
+# /run/start.sh is sourced before the VM starts; nginx already includes
+# conf.d/*.conf.
+COPY --chmod=644 00-token.conf /etc/nginx/conf.d/00-token.conf
+COPY --chmod=755 start.sh      /run/start.sh
+# Runtime disk materializer (fetches the artifact golden base + overlay); a
+# no-op unless GOLDEN_DISK_URL is set.
+COPY --chmod=755 golden-disk.sh /run/golden-disk.sh
+
+# macOS 15 Sequoia, pre-baked disk => no installer phase.
+# NOTE: Sequoia on this Ice Lake host deadlocks with 8 vCPUs; 4 is stable.
+# WORKER_OS: empty (plain macos -> the macos xa11y driver).
+ARG WORKER_OS=""
+# Default golden disk (disk-less images): baked into ENV so the VM boots even
+# when no GOLDEN_DISK_URL is injected; a pod env still overrides it.
+ARG GOLDEN_DISK_URL=""
+ENV VERSION=15 \
+    CPU_CORES=4 \
+    DISK_SIZE=128G \
+    RAM_SIZE=16384M \
+    SAMBA=N \
+    DISK_FILE=/storage/15/data.qcow2 \
+    USER_PORTS=48080 \
+    WORKER_OS=${WORKER_OS} \
+    GOLDEN_DISK_URL=${GOLDEN_DISK_URL}
+
+# qemu exports its VNC display (dockur's `DISPLAY=web`), and the container's
+ENV DISPLAY=web \
+    WEB_PORT=6080
+
+VOLUME /storage
+EXPOSE 22 48080 8090
+ENTRYPOINT ["/usr/bin/tini", "-s", "/run/entry.sh"]
