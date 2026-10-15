@@ -59,8 +59,8 @@ DISK="${DISK:-${DIR}/${VARIANT}/data.qcow2}"
 SUPPORT="${SUPPORT:-${DIR}/${VARIANT}/support}"
 # Both guest binaries come from GitHub releases (see the Containerfile), so the
 # build only needs the versions, not staged files.
-WORKER_VERSION="${WORKER_VERSION:-v0.0.1}"
-EASYSTREAM_VERSION="${EASYSTREAM_VERSION:-v0.0.1}"
+WORKER_VERSION="${WORKER_VERSION:-v0.1.0}"
+EASYSTREAM_VERSION="${EASYSTREAM_VERSION:-v0.1.0}"
 BUILDCTL="${BUILDCTL:-$(command -v buildctl || true)}"
 # EMBED_DISK=0 builds a disk-less image (the guest disk is fetched at run time
 # from the artifact golden base + per-sandbox overlay — see golden-disk.sh).
