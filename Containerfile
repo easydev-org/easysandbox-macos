@@ -91,13 +91,25 @@ COPY disk/support/macos.rom  /opt/macboot/15/macos.rom
 COPY disk/support/macos.sn   /opt/macboot/15/macos.sn
 COPY disk/support/macos.vars /opt/macboot/15/macos.vars
 
-# --- agent-worker boot-fetch ----------------------------------------------
-# The guest launcher downloads the worker on every boot (nginx :8090 /worker):
-# a worker upgrade is an image change, never a golden rebake. There is NO disk
-# fallback — the container always serves it.
-# NOTE: xa11y is gone — a11y/input/capture are the easystream daemon's job.
-COPY --chmod=755 agent-worker-darwin /opt/agent-worker/agent-worker
-COPY --chmod=755 easystream-darwin /opt/agent-worker/easystream
+# --- agent-worker + easystream (both boot-fetched by the guest) ------------
+# The guest launcher downloads both on every boot (nginx :8090 /worker and
+# /easystream): an upgrade is an image change, never a golden rebake. There is
+# NO disk fallback — the container always serves them.
+#
+# Both binaries come from their GitHub releases (the source repos are the source
+# of truth; the sandbox image just ships what they published).
+ARG WORKER_VERSION=v0.0.1
+ARG EASYSTREAM_VERSION=v0.0.1
+ARG RELEASE_PROXY
+RUN set -eux; \
+    mkdir -p /opt/agent-worker; \
+    for spec in \
+      "agent-worker|https://github.com/easydev-org/easyworker/releases/download/${WORKER_VERSION}/agent-worker-darwin-amd64" \
+      "easystream|https://github.com/easydev-org/easystream-macos/releases/download/${EASYSTREAM_VERSION}/easystream-darwin-amd64" ; do \
+      name="${spec%%|*}"; url="${spec#*|}"; \
+      curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} -o "/opt/agent-worker/${name}" "${url}"; \
+    done; \
+    chmod 755 /opt/agent-worker/agent-worker /opt/agent-worker/easystream
 # The REAL launch logic. The on-disk loader (/Users/docker/bootstrap.sh, the
 # ONLY launch file on the golden disk) fetches this every boot, so ALL launch
 # behaviour is an image change (no golden-disk rebake).
@@ -129,9 +141,45 @@ ENV VERSION=15 \
     WORKER_OS=${WORKER_OS} \
     GOLDEN_DISK_URL=${GOLDEN_DISK_URL}
 
-# qemu exports its VNC display (dockur's `DISPLAY=web`), and the container's
-ENV DISPLAY=web \
-    WEB_PORT=6080
+# Display mode: 1024x768, matching the Windows/Linux/Android sandboxes.
+#
+# These only drive OpenCore's UEFI Output/Resolution (the firmware GOP, i.e.
+# the boot logo/picker). macOS re-negotiates its own mode after boot, so the
+# RUNNING desktop is pinned by the VGA EDID below, not by this.
+#
+# HEIGHT must be 1080 or 768: those are the only OVMF VARS templates the qemux
+# base ships (see the symlinks below); any other value hits the generic branch
+# and dies with "UEFI boot file ... not found" (exit 44).
+ENV WIDTH=1024 \
+    HEIGHT=768
+
+# Display mode: 1024x768, matching the Windows/Linux/Android sandboxes.
+#
+# THIS is what sets the running desktop size. macOS ignores the OpenCore
+# Resolution (with it set to 1024x768 the guest still came up 1280x1024); what
+# it honours is the VGA adapter's EDID, so advertise a single mode on the VGA
+# device and macOS adopts it. Verified: the stream reports 1024x768.
+ENV ARGUMENTS="-device VGA,xres=1024,yres=768"
+
+# boot.sh expects /usr/share/OVMF/OVMF_CODE.fd + OVMF_VARS[-WxH].fd, but the
+# qemux base image only ships the 4M names (OVMF_CODE_4M.fd / OVMF_VARS_4M.fd).
+# Without these links the very first boot of a fresh PVC dies with
+# "UEFI boot file (/usr/share/OVMF/OVMF_CODE.fd) not found" (exit 44) — it only
+# worked before because a previously generated .rom was still on the PVC.
+RUN cd /usr/share/OVMF \
+    && ln -sf OVMF_CODE_4M.fd OVMF_CODE.fd \
+    && ln -sf OVMF_VARS_4M.fd OVMF_VARS.fd \
+    && ln -sf OVMF_VARS_4M.fd OVMF_VARS-1920x1080.fd \
+    && ln -sf OVMF_VARS_4M.fd OVMF_VARS-1024x768.fd \
+    && ls -la /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_VARS*.fd
+
+# The guest's easystream daemon streams the screen itself (over est/H.264), so
+# the QEMU VNC display and the noVNC web client are dead weight: no VNC, no
+# noVNC assets, no extra port.
+ENV DISPLAY=none
+
+# noVNC is only used by the VNC display we just turned off.
+RUN rm -rf /usr/share/novnc /usr/share/novnc-* 2>/dev/null || true
 
 VOLUME /storage
 EXPOSE 22 48080 8090

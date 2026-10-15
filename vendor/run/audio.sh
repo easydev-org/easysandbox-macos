@@ -24,6 +24,11 @@ supportsAudio() {
 
 disableAudioControl() {
 
+  # noVNC is not shipped in the nodisk image (DISPLAY=none: the guest
+  # streams its own screen). Nothing to patch then.
+  [ -f "$NOVNC_HTML" ] || return 0
+
+
   if ! sed -i \
     -e '/id="noVNC_setting_audio"/ s/ disabled//' \
     -e '/id="noVNC_setting_audio"/ s/type="checkbox"/type="checkbox" disabled/' \

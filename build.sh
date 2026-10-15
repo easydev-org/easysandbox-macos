@@ -57,14 +57,16 @@ no_proxy="${no_proxy:-$NO_PROXY}"
 export NO_PROXY no_proxy
 DISK="${DISK:-${DIR}/${VARIANT}/data.qcow2}"
 SUPPORT="${SUPPORT:-${DIR}/${VARIANT}/support}"
-WORKER_BIN="${WORKER_BIN:-${ROOT}/dist/agent-worker-darwin-amd64}"
-NATIVE_BIN="${NATIVE_BIN:-${ROOT}/dist/easystream-darwin-amd64}"
+# Both guest binaries come from GitHub releases (see the Containerfile), so the
+# build only needs the versions, not staged files.
+WORKER_VERSION="${WORKER_VERSION:-v0.0.1}"
+EASYSTREAM_VERSION="${EASYSTREAM_VERSION:-v0.0.1}"
 BUILDCTL="${BUILDCTL:-$(command -v buildctl || true)}"
 # EMBED_DISK=0 builds a disk-less image (the guest disk is fetched at run time
 # from the artifact golden base + per-sandbox overlay — see golden-disk.sh).
 EMBED_DISK="${EMBED_DISK:-1}"
 
-for f in "${DIR}/Containerfile" "${DIR}/00-token.conf" "${DIR}/start.sh" "${DIR}/golden-disk.sh" "${WORKER_BIN}"; do
+for f in "${DIR}/Containerfile" "${DIR}/00-token.conf" "${DIR}/start.sh" "${DIR}/golden-disk.sh"; do
   [ -e "$f" ] || { echo "missing $f" >&2; exit 1; }
 done
 [ "${EMBED_DISK}" = "1" ] && [ ! -e "${DISK}" ] && { echo "missing disk ${DISK} (or set EMBED_DISK=0)" >&2; exit 1; }
@@ -76,8 +78,8 @@ trap 'rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/disk/support"
 cp "${DIR}/Containerfile" "${WORK}/Dockerfile"
 cp "${DIR}/00-token.conf" "${DIR}/start.sh" "${WORK}/"
-cp "${WORKER_BIN}" "${WORK}/agent-worker-darwin"
-cp "${NATIVE_BIN}" "${WORK}/easystream-darwin"
+# NOTE: neither the worker nor easystream is staged here — the Containerfile
+# fetches both from their GitHub releases (WORKER_VERSION / EASYSTREAM_VERSION).
 cp -r "${DIR}/vendor" "${WORK}/vendor"
 cp -r "${DIR}/guest"  "${WORK}/guest"
 cp "${DIR}/golden-disk.sh" "${WORK}/"
@@ -103,6 +105,9 @@ echo "  disk: $(du -h "${WORK}/disk/data.qcow2" | cut -f1) (EMBED_DISK=${EMBED_D
   --opt "build-arg:HTTP_PROXY=${PROXY}" \
   --opt "build-arg:HTTPS_PROXY=${PROXY}" \
   --opt "build-arg:EMBED_DISK=${EMBED_DISK}" \
+  --opt "build-arg:WORKER_VERSION=${WORKER_VERSION}" \
+  --opt "build-arg:EASYSTREAM_VERSION=${EASYSTREAM_VERSION}" \
+  --opt "build-arg:RELEASE_PROXY=${PROXY}" \
   --opt "build-arg:WORKER_OS=${WORKER_OS}" \
   --opt "build-arg:GOLDEN_DISK_URL=${GOLDEN_DISK_URL}" \
   --output "type=oci,dest=${WORK}/image.oci,compression=zstd" \
