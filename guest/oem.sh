@@ -118,11 +118,42 @@ PLIST
     # desktop images use and is what actually works.
     codesign --remove-signature "$NA_BIN" 2>/dev/null || true
     for DB in "/Library/Application Support/com.apple.TCC/TCC.db"               "$WROOT/Library/Application Support/com.apple.TCC/TCC.db"; do
-      for svc in kTCCServiceScreenRecording kTCCServiceScreenCapture                  kTCCServiceAccessibility kTCCServiceListenEvent                  kTCCServicePostEvent kTCCServiceAppleEvents; do
+      # kTCCServiceMicrophone is what audio capture needs: the daemon reads the
+      # BlackHole loopback through AUHAL, and macOS attributes that to the
+      # Microphone permission (there is no separate "system audio" TCC service).
+      for svc in kTCCServiceScreenRecording kTCCServiceScreenCapture                  kTCCServiceAccessibility kTCCServiceListenEvent                  kTCCServicePostEvent kTCCServiceAppleEvents                  kTCCServiceMicrophone; do
         sqlite3 "$DB" "INSERT OR REPLACE INTO access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES('$svc','$NA_BIN',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,strftime('%s','now'));" 2>/dev/null || true
       done
     done
     killall -9 tccd 2>/dev/null || true
+    # --- system-audio capture: BlackHole loopback + a clocked aggregate -------
+    # The daemon reads system audio through BlackHole (see easystream EST.md):
+    # ScreenCaptureKit's capturesAudio does not work in a VM, so audio goes
+    # through a HAL loopback device instead.
+    #
+    # BlackHole itself is installed INTO THE GOLDEN DISK (it is a signed HAL
+    # plug-in; installing it per boot would need a reboot). What is per-boot is
+    # the AGGREGATE DEVICE that gives BlackHole a clock, because the guest has no
+    # real audio hardware to drive it.
+    #
+    # Best-effort: no audio must never break the sandbox.
+    if [ -d /Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver ] \
+       || [ -d /Library/Audio/Plug-Ins/HAL/BlackHole16ch.driver ]; then
+      echo "oem: configuring the BlackHole aggregate device for audio capture"
+      # Make BlackHole the DEFAULT OUTPUT so that whatever the guest plays is
+      # what the daemon captures. The daemon reads BlackHole as an INPUT; a HAL
+      # loopback device has no clock of its own, so it is used inside an
+      # aggregate device whose clock comes from the guest's own output device
+      # (that aggregate is created by the bake; see bake-guest.sh).
+      if [ -x /usr/bin/switchaudiosource ]; then
+        su -l docker -c "/usr/bin/switchaudiosource -t output -s BlackHole2ch" \
+          2>&1 | tail -1 || true
+      fi
+      su -l docker -c "/usr/sbin/system_profiler SPAudioDataType 2>/dev/null | grep -i -A1 blackhole | head -4" \
+        2>&1 | tail -4 || true
+    else
+      echo "oem: BlackHole not installed in the golden disk; audio unavailable"
+    fi
   # Disable the Keyboard Setup Assistant. It launches at login and is MODAL:
   # it swallows every keystroke, so the guest looks like "keyboard input does
   # not work" (each character needs two presses to get past the dialog).

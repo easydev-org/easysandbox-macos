@@ -47,7 +47,8 @@ for client in \
     kTCCServiceAppleEvents \
     kTCCServiceListenEvent \
     kTCCServicePostEvent \
-    kTCCServiceScreenRecording ; do
+    kTCCServiceScreenRecording \
+    kTCCServiceMicrophone ; do
     grant "$client" "$svc"
   done
 done
