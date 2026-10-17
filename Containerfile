@@ -111,6 +111,21 @@ RUN set -eux; echo "release cachebust ${RELEASE_CACHEBUST}"; \
       curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} -o "/opt/agent-worker/${name}" "${url}"; \
     done; \
     chmod 755 /opt/agent-worker/agent-worker /opt/agent-worker/easystream
+
+# --- BlackHole: the system-audio loopback HAL plug-in ---------------------
+# The est daemon captures SYSTEM audio through BlackHole, because
+# ScreenCaptureKit's capturesAudio does not work in a VM (see easystream
+# EST.md). BlackHole's own releases carry NO binaries (source only, needing
+# Xcode), so the built driver lives in the artifact store; the image pulls it
+# and nginx serves it to the guest, which installs it at boot — a BlackHole
+# upgrade is therefore an image change, not a golden rebake.
+ARG BLACKHOLE_VERSION=0.7.1
+ARG ARTIFACT=http://artifact.worker.svc.cluster.local
+RUN set -eux; echo "blackhole cachebust ${RELEASE_CACHEBUST}"; \
+    mkdir -p "/opt/agent-worker/blackhole/${BLACKHOLE_VERSION}"; \
+    curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} \
+      -o "/opt/agent-worker/blackhole/${BLACKHOLE_VERSION}/BlackHole.driver-${BLACKHOLE_VERSION}.tgz" \
+      "${ARTIFACT}/artifacts/generic/blackhole/${BLACKHOLE_VERSION}/BlackHole.driver-${BLACKHOLE_VERSION}.tgz"
 # The REAL launch logic. The on-disk loader (/Users/docker/bootstrap.sh, the
 # ONLY launch file on the golden disk) fetches this every boot, so ALL launch
 # behaviour is an image change (no golden-disk rebake).

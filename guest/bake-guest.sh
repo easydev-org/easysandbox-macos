@@ -80,32 +80,6 @@ sysadminctl -autologin set -userName docker -password admin \
   -adminUser docker -adminPassword admin 2>&1 | tail -2 || true
 defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string docker 2>/dev/null || true
 
-############ 5b. BlackHole: the system-audio loopback device
-# The easystream daemon captures SYSTEM audio through a HAL loopback device
-# (see easystream EST.md): ScreenCaptureKit's capturesAudio does not work in a
-# VM. BlackHole is a signed HAL plug-in, so it must be installed HERE, into the
-# golden disk — it cannot be installed per boot (coreaudiod would need a
-# restart, and the plug-in is signed).
-#
-# Best-effort: if the download fails the disk still bakes, and the daemon simply
-# advertises hasAudio=0.
-BLACKHOLE_PKG_URL="${BLACKHOLE_PKG_URL:-https://existential.audio/downloads/BlackHole2ch.pkg}"
-if [ ! -d /Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver ]; then
-  echo "== 5b. install BlackHole (system-audio loopback) =="
-  if curl -fsSL -m 120 -o /tmp/blackhole.pkg "$BLACKHOLE_PKG_URL"; then
-    installer -pkg /tmp/blackhole.pkg -target / 2>&1 | tail -2 || true
-    rm -f /tmp/blackhole.pkg
-    # coreaudiod picks the new plug-in up on restart; the guest reboots after
-    # the bake anyway.
-    killall coreaudiod 2>/dev/null || true
-  else
-    echo "WARN: could not download BlackHole from $BLACKHOLE_PKG_URL" >&2
-  fi
-else
-  echo "== 5b. BlackHole already present =="
-fi
-ls -d /Library/Audio/Plug-Ins/HAL/BlackHole*.driver 2>/dev/null || echo "WARN: no BlackHole driver installed"
-
 ############ 6. verify
 echo "== sudoers =="; visudo -c -f "$SUDOERS"
 echo "== autologin =="; sysadminctl -autologin status 2>&1 | tail -1

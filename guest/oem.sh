@@ -131,28 +131,44 @@ PLIST
     # ScreenCaptureKit's capturesAudio does not work in a VM, so audio goes
     # through a HAL loopback device instead.
     #
-    # BlackHole itself is installed INTO THE GOLDEN DISK (it is a signed HAL
-    # plug-in; installing it per boot would need a reboot). What is per-boot is
-    # the AGGREGATE DEVICE that gives BlackHole a clock, because the guest has no
-    # real audio hardware to drive it.
+    # BlackHole is installed HERE, at boot, from the artifact store: the official
+    # releases carry no binaries (source only, needing Xcode), so the driver is
+    # published to the artifact store once and boot-fetched like the worker and
+    # easystream themselves. That keeps a BlackHole upgrade an image change
+    # rather than a golden rebake.
     #
     # Best-effort: no audio must never break the sandbox.
-    if [ -d /Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver ] \
-       || [ -d /Library/Audio/Plug-Ins/HAL/BlackHole16ch.driver ]; then
+    BH_HAL=/Library/Audio/Plug-Ins/HAL
+    BH_VER="${BLACKHOLE_VERSION:-0.7.1}"
+    if [ ! -d "$BH_HAL/BlackHole.driver" ]; then
+      echo "oem: installing BlackHole $BH_VER (system-audio loopback)"
+      if curl -fsSL -m 120 -o /tmp/blackhole.tgz \
+           "http://host.lan:8090/blackhole/${BH_VER}/BlackHole.driver-${BH_VER}.tgz"; then
+        mkdir -p "$BH_HAL"
+        tar xzf /tmp/blackhole.tgz -C "$BH_HAL" && rm -f /tmp/blackhole.tgz
+        # A HAL plug-in is only picked up when coreaudiod starts.
+        killall coreaudiod 2>/dev/null || true
+        sleep 2
+      else
+        echo "oem: BlackHole download failed; audio unavailable" >&2
+      fi
+    fi
+    if [ -d "$BH_HAL/BlackHole.driver" ]; then
       echo "oem: configuring the BlackHole aggregate device for audio capture"
       # Make BlackHole the DEFAULT OUTPUT so that whatever the guest plays is
       # what the daemon captures. The daemon reads BlackHole as an INPUT; a HAL
       # loopback device has no clock of its own, so it is used inside an
-      # aggregate device whose clock comes from the guest's own output device
-      # (that aggregate is created by the bake; see bake-guest.sh).
+      # aggregate device whose clock comes from the guest's own output device.
       if [ -x /usr/bin/switchaudiosource ]; then
-        su -l docker -c "/usr/bin/switchaudiosource -t output -s BlackHole2ch" \
+        # The device name is the plug-in's CFBundleName (BlackHole), not the
+        # .driver directory name.
+        su -l docker -c "/usr/bin/switchaudiosource -t output -s BlackHole" \
           2>&1 | tail -1 || true
       fi
       su -l docker -c "/usr/sbin/system_profiler SPAudioDataType 2>/dev/null | grep -i -A1 blackhole | head -4" \
         2>&1 | tail -4 || true
     else
-      echo "oem: BlackHole not installed in the golden disk; audio unavailable"
+      echo "oem: BlackHole unavailable; audio disabled"
     fi
   # Disable the Keyboard Setup Assistant. It launches at login and is MODAL:
   # it swallows every keystroke, so the guest looks like "keyboard input does
