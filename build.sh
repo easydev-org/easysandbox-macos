@@ -78,6 +78,8 @@ trap 'rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/disk/support"
 cp "${DIR}/Containerfile" "${WORK}/Dockerfile"
 cp "${DIR}/00-token.conf" "${DIR}/start.sh" "${WORK}/"
+# The single boot script (replaces the vendored vendor/run/*.sh boot chain).
+cp "${DIR}/sandbox.sh" "${WORK}/"
 # NOTE: neither the worker nor easystream is staged here — the Containerfile
 # fetches both from their GitHub releases (WORKER_VERSION / EASYSTREAM_VERSION).
 cp -r "${DIR}/vendor" "${WORK}/vendor"

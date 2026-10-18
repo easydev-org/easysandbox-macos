@@ -44,9 +44,12 @@ RUN set -eux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# --- vendored macOS runtime ------------------------------------------------
-# The boot scripts (entry/boot/cpu/disk/display/network/install/...).
+# --- sandbox runtime -------------------------------------------------------
+# The whole boot path is ONE script (sandbox.sh): identity + OpenCore + OVMF +
+# network + audio + nginx + QEMU. vendor/run holds only the two helpers it
+# calls: audio.py (FIFO->socket relay) and socket.sh (status websocket).
 COPY --chmod=755 vendor/run/ /run/
+COPY --chmod=755 sandbox.sh    /run/entry.sh
 # Assets the boot path reads: the OpenCore config template, and the OpenCore
 # and VMHide archives whose hashes feed the boot-image signature.
 COPY --chmod=644 vendor/assets/config.plist /assets/config.plist
@@ -142,25 +145,18 @@ ENV VERSION=15 \
     WORKER_OS=${WORKER_OS} \
     GOLDEN_DISK_URL=${GOLDEN_DISK_URL}
 
-# Display mode: 1024x768, matching the Windows/Linux/Android sandboxes.
+# Display + resources. sandbox.sh owns the FULL QEMU command line (vmware VGA,
+# nec-usb-xhci, isa-applesmc, the OpenCore + data disks, no VNC), so ARGUMENTS
+# is an empty EXTRA-args slot here — the old `-device VGA` conflicted with
+# sandbox.sh's `-vga vmware`.
 #
-# These only drive OpenCore's UEFI Output/Resolution (the firmware GOP, i.e.
-# the boot logo/picker). macOS re-negotiates its own mode after boot, so the
-# RUNNING desktop is pinned by the VGA EDID below, not by this.
-#
-# HEIGHT must be 1080 or 768: those are the only OVMF VARS templates the qemux
-# base ships (see the symlinks below); any other value hits the generic branch
-# and dies with "UEFI boot file ... not found" (exit 44).
+# WIDTH/HEIGHT feed the OpenCore UEFI Output resolution and the OVMF VARS
+# template selection. HEIGHT must be 1080 or 768 (the only templates the qemux
+# base ships; see the symlinks below) or the boot dies with
+# "UEFI boot file ... not found" (exit 44).
 ENV WIDTH=1024 \
-    HEIGHT=768
-
-# Display mode: 1024x768, matching the Windows/Linux/Android sandboxes.
-#
-# THIS is what sets the running desktop size. macOS ignores the OpenCore
-# Resolution (with it set to 1024x768 the guest still came up 1280x1024); what
-# it honours is the VGA adapter's EDID, so advertise a single mode on the VGA
-# device and macOS adopts it. Verified: the stream reports 1024x768.
-ENV ARGUMENTS="-device VGA,xres=1024,yres=768"
+    HEIGHT=768 \
+    ARGUMENTS=""
 
 # boot.sh expects /usr/share/OVMF/OVMF_CODE.fd + OVMF_VARS[-WxH].fd, but the
 # qemux base image only ships the 4M names (OVMF_CODE_4M.fd / OVMF_VARS_4M.fd).

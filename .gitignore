@@ -4,3 +4,6 @@
 # (stored via Git LFS, see .gitattributes) and vendor/opencore/*.
 disk/data.qcow2
 */disk/data.qcow2
+
+# local build staging (disk + support), not tracked
+/base/
