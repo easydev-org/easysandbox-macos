@@ -107,6 +107,34 @@ cd /tmp/xa11y && RUSTC=/Users/docker/rust/bin/rustc PATH=/Users/docker/rust/bin:
 
 The CLT/Rust live only in that throwaway guest — the sandbox disk is untouched.
 
+## Getting the golden disk
+
+The multi-GB guest disk is **not** stored in this repo (see `.gitignore`). It is
+published on **ghcr.io as sharded OCI images** and fetched with `fetch-golden.sh`:
+
+```sh
+# -> /storage/15/data.qcow2, sha256-verified
+./fetch-golden.sh macos /storage/15/data.qcow2
+```
+
+Why sharded: no single GitHub store fits an 18 GiB disk —
+
+| store | limit | fits? |
+|---|---|---|
+| Git LFS | 2 GiB/file (Free/Pro), 5 GiB (Enterprise) | no |
+| release asset | < 2 GiB | no |
+| OCI layer | 10 GiB **and** a 10-minute upload timeout | no (18 GiB) |
+
+so the disk is split into <4 GiB parts and each part is one single-layer image:
+`ghcr.io/silvermelon233/golden-macos:macos15-xcode3.00 .. .04`. The script pulls
+them anonymously, extracts each part from its layer, joins them, and verifies
+the whole-disk sha256
+(`0e31229c53f579337c14f9f8ea064e1ec980dbe6a30933a11d1f41634556cb45`).
+
+`GOLDEN_DISK_URL` in the image/ENV can also point at the artifact store
+(`.../artifacts/generic/golden-macos/15/data-xcode3.qcow2`), which is what the
+cluster uses at runtime.
+
 ## Building the image
 
 ```sh
