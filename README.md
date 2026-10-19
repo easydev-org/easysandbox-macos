@@ -1,6 +1,6 @@
-# agent-worker macOS image
+# easyworker macOS image
 
-The agent-worker macOS (Sequoia) sandbox: a self-owned runtime (the generic
+The easyworker macOS (Sequoia) sandbox: a self-owned runtime (the generic
 `qemux/qemu` Debian base + the vendored boot scripts in `vendor/`) wrapped
 around a pre-baked guest disk that already contains the worker, its launcher and
 the LaunchAgent/LaunchDaemon. No upstream sandbox image is referenced.
@@ -140,7 +140,7 @@ cluster uses at runtime.
 ```sh
 # stage (git-ignored): agent-toolchain/vm/macos/<variant>/data.qcow2
 #                      agent-toolchain/vm/macos/<variant>/support/
-scripts/build-all.sh                        # dist/agent-worker-darwin-amd64
+scripts/build-all.sh                        # dist/easyworker-darwin-amd64
 scripts/build-xa11y.sh macos                # checks dist/xa11y-darwin-amd64
 ./agent-toolchain/vm/macos/build.sh base
 ./agent-toolchain/vm/macos/build.sh xcode

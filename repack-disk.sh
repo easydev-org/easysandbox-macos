@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shrink the agent-worker macOS golden-disk OCI layer.
+# Shrink the easyworker macOS golden-disk OCI layer.
 #
 # The macOS VM images are dominated by one layer: the pre-baked guest qcow2.
 # The committed golden stores its clusters internally compressed (zlib), so its

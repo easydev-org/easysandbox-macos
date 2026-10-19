@@ -8,18 +8,18 @@
 # Responsibilities:
 #   1. fetch the pod-provided per-pod env (WORKER_TOKEN + SANDBOX_PROXY) from
 #      http://host.lan:8090/env
-#   2. boot-fetch the current agent-worker binary from
+#   2. boot-fetch the current easyworker binary from
 #      http://host.lan:8090/worker (so a worker upgrade is an image change,
 #      not a golden-disk change), falling back to the baked copy
 #   3. boot-fetch the xa11y computer-use CLI from http://host.lan:8090/xa11y
 #      and grant it the Accessibility (TCC) permission (SIP is off in this
 #      image, so the TCC db is writable) — done as root before the worker
-#   4. start agent-worker inside docker's GUI session
+#   4. start easyworker inside docker's GUI session
 set -Eeuo pipefail
 
 WROOT=/Users/docker
-BIN="$WROOT/agent-worker-darwin"
-DL="$WROOT/agent-worker-darwin.dl"
+BIN="$WROOT/easyworker-darwin"
+DL="$WROOT/easyworker-darwin.dl"
 WS="$WROOT/workspace"
 DP="$WROOT/displayplacer"
 SCREEN_RESOLUTION="${SCREEN_RESOLUTION:-1920x1080}"
@@ -98,12 +98,12 @@ if [ -x "$NA_BIN" ]; then
   # A per-user LaunchAgent (LimitLoadToSessionType=Aqua) is the reliable way.
   if [ "$(id -un)" = "root" ]; then
     mkdir -p "$WROOT/Library/LaunchAgents"
-    cat > "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" <<'PLIST'
+    cat > "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.agentworker.easystream</string>
+    <key>Label</key><string>com.easyworker.easystream</string>
     <key>ProgramArguments</key>
     <array><string>/Users/docker/easystream</string><string>serve</string></array>
     <key>RunAtLoad</key><true/>
@@ -116,14 +116,14 @@ PLIST
     # must be written into the plist itself — otherwise the daemon starts with
     # no token (unauthenticated: anyone who reaches :48079 gets control).
     if [ -n "$EAZYSTREAM_CONTROL_TOKEN" ]; then
-      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null || true
-      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN string '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null \
-        || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist"
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN string '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist"
     fi
     if [ -n "$EAZYSTREAM_VIEW_TOKEN" ]; then
-      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_VIEW_TOKEN string '$EAZYSTREAM_VIEW_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_VIEW_TOKEN string '$EAZYSTREAM_VIEW_TOKEN'" "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist" 2>/dev/null || true
     fi
-    chown docker:staff "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist"
+    chown docker:staff "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist"
     # Grant the screen-capture / accessibility TCC permissions to the daemon's
     # stable path, then restart tccd so it re-reads the db (the daemon is
     # restarted by the kickstart below, so it gets a fresh decision).
@@ -154,9 +154,9 @@ PLIST
     # therefore the worker, which oem.sh execs afterwards) for 2 minutes.
     for _ in $(seq 1 60); do
       if launchctl print gui/"${AQUA_UID:-501}" >/dev/null 2>&1; then
-        launchctl asuser "${AQUA_UID:-501}" launchctl bootout gui/"${AQUA_UID:-501}"/com.agentworker.easystream 2>/dev/null || true
-        launchctl asuser "${AQUA_UID:-501}" launchctl bootstrap gui/"${AQUA_UID:-501}" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null || true
-        launchctl asuser "${AQUA_UID:-501}" launchctl kickstart -k gui/"${AQUA_UID:-501}"/com.agentworker.easystream 2>/dev/null && break
+        launchctl asuser "${AQUA_UID:-501}" launchctl bootout gui/"${AQUA_UID:-501}"/com.easyworker.easystream 2>/dev/null || true
+        launchctl asuser "${AQUA_UID:-501}" launchctl bootstrap gui/"${AQUA_UID:-501}" "$WROOT/Library/LaunchAgents/com.easyworker.easystream.plist" 2>/dev/null || true
+        launchctl asuser "${AQUA_UID:-501}" launchctl kickstart -k gui/"${AQUA_UID:-501}"/com.easyworker.easystream 2>/dev/null && break
       fi
       sleep 2
     done
@@ -190,7 +190,7 @@ done
 # --- TCC --------------------------------------------------------------------
 # STATIC: the Accessibility / ScreenCapture grants are BAKED into the golden
 # disk's TCC.db by guest/bake-hardening.sh (SIP is off, so the db is writable).
-# TCC grants are keyed by the STABLE paths (~/agent-worker-darwin), so they
+# TCC grants are keyed by the STABLE paths (~/easyworker-darwin), so they
 # persist across boots and survive worker upgrades — the launcher does NOT
 # re-grant every boot. Persistent state takes the static route.
 
@@ -213,13 +213,13 @@ if [ "$(id -un)" = "docker" ]; then
   # The launch script owns logging (same as Windows' oem.cmd): the LaunchAgent
   # plist sets NO StandardOutPath, so launchd never has to open a log file —
   # which is what produced EX_CONFIG (78) when ws/ was root-owned.
-  exec "$BIN" -addr 0.0.0.0:48080 -workspace "$WS" -db "$WS/jobs.db" >>"$WS/agent-worker.log" 2>&1
+  exec "$BIN" -addr 0.0.0.0:48080 -workspace "$WS" -db "$WS/jobs.db" >>"$WS/easyworker.log" 2>&1
 fi
 
 # Daemon path: wait for the logged-in session, then hand off to the agent.
 for _ in $(seq 1 150); do
   if launchctl print gui/501 >/dev/null 2>&1; then
-    if launchctl asuser 501 launchctl kickstart -k gui/501/com.agentworker.worker 2>/dev/null; then
+    if launchctl asuser 501 launchctl kickstart -k gui/501/com.easyworker.worker 2>/dev/null; then
       exit 0
     fi
   fi

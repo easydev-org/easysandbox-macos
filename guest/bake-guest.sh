@@ -1,16 +1,16 @@
 #!/bin/bash
 # Guest-side bake for the macOS image (run as root INSIDE the macOS guest).
 #
-# Goal: agent-worker runs inside docker's logged-in Aqua session (so GUI apps
+# Goal: easyworker runs inside docker's logged-in Aqua session (so GUI apps
 # reach WindowServer) and docker may sudo without a password or TTY. The
 # launcher boot-fetches the worker from host.lan:8090/worker.
 set -Eeuo pipefail
 
 WROOT=/Users/docker
-SUDOERS=/etc/sudoers.d/agent-worker
+SUDOERS=/etc/sudoers.d/easyworker
 LOADER=$WROOT/bootstrap.sh
-DAEMON=/Library/LaunchDaemons/com.agentworker.worker.plist
-AGENT=$WROOT/Library/LaunchAgents/com.agentworker.worker.plist
+DAEMON=/Library/LaunchDaemons/com.easyworker.worker.plist
+AGENT=$WROOT/Library/LaunchAgents/com.easyworker.worker.plist
 
 mkdir -p "$WROOT/Library/LaunchAgents" "$WROOT/workspace"
 chown docker:staff "$WROOT/workspace" "$WROOT/Library/LaunchAgents"
@@ -38,7 +38,7 @@ cat > "$DAEMON" <<'EOF'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.agentworker.worker</string>
+    <key>Label</key><string>com.easyworker.worker</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
@@ -57,7 +57,7 @@ cat > "$AGENT" <<'EOF'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.agentworker.worker</string>
+    <key>Label</key><string>com.easyworker.worker</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
@@ -71,7 +71,7 @@ cat > "$AGENT" <<'EOF'
 EOF
 chown docker:staff "$AGENT"; chmod 644 "$AGENT"
 
-# NOTE: the easystream daemon's LaunchAgent (com.agentworker.easystream) and its
+# NOTE: the easystream daemon's LaunchAgent (com.easyworker.easystream) and its
 # screen-capture TCC grants are created by oem.sh at boot, NOT here: they are
 # launch logic (a boot change must be an image change, never a golden rebake).
 

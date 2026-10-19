@@ -28,14 +28,14 @@ grant() {
 # non-NULL csreq that does not match the (unsigned) binary makes tccd
 # fail with SecRequirementCreateWithData (-67052) and DENY the request
 # (screen capture then yields only the wallpaper + window frames).
-for stale in /usr/local/bin/xa11y "$WROOT/xa11y" "$WROOT/agent-worker-v0.5.2" "$WROOT/easyworker-darwin" "$WROOT/easyworker"; do
+for stale in /usr/local/bin/xa11y "$WROOT/xa11y" "$WROOT/easyworker-v0.5.2" "$WROOT/easyworker-darwin" "$WROOT/easyworker"; do
   sqlite3 "$TCC" "delete from access where client='$stale';" 2>/dev/null || true
 done
 sqlite3 "$TCC" "update access set csreq=NULL where csreq IS NOT NULL;" 2>/dev/null || true
 
 for client in \
-  "$WROOT/agent-worker-darwin" \
-  "$WROOT/agent-worker" \
+  "$WROOT/easyworker-darwin" \
+  "$WROOT/easyworker" \
   "$WROOT/easystream" \
   /bin/bash /bin/zsh /usr/bin/curl /usr/bin/python3 \
   /System/Applications/Utilities/Terminal.app \
@@ -88,7 +88,7 @@ echo "== 5b. remove legacy / stale files =="
 # The a11y helper is gone (its job moved into the easystream daemon), and
 # the old worker name is gone too. Clear their sudoers + any stray files.
 rm -f /private/etc/sudoers.d/easyworker /private/etc/sudoers.d/xa11y 2>/dev/null || true
-rm -f /usr/local/bin/xa11y "$WROOT/xa11y" "$WROOT/agent-worker-v0.5.2" \
+rm -f /usr/local/bin/xa11y "$WROOT/xa11y" "$WROOT/easyworker-v0.5.2" \
       "$WROOT/easyworker" "$WROOT/easyworker-darwin" 2>/dev/null || true
 
 echo '== 6. restart tccd so grants take effect =='
@@ -100,21 +100,21 @@ echo 'MAC_HARDENING_OK'
 echo '== 7. remove run-time files that must NOT be on the golden disk =='
 # The boot path fetches these every boot (image change, never a golden rebake):
 #   easystream          <- nginx /easystream
-#   agent-worker-darwin <- nginx /worker
+#   easyworker-darwin <- nginx /worker
 #   oem.sh              <- nginx /oem.sh
 # The golden disk must carry ONLY the loader (bootstrap.sh) + the LaunchAgents.
 # (They appear here because the LaunchAgent runs the loader during baking.)
-launchctl bootout system/com.agentworker.worker 2>/dev/null || true
-launchctl bootout gui/501/com.agentworker.worker 2>/dev/null || true
-launchctl bootout gui/501/com.agentworker.easystream 2>/dev/null || true
+launchctl bootout system/com.easyworker.worker 2>/dev/null || true
+launchctl bootout gui/501/com.easyworker.worker 2>/dev/null || true
+launchctl bootout gui/501/com.easyworker.easystream 2>/dev/null || true
 sleep 2
-pkill -9 -f agent-worker-darwin 2>/dev/null || true
+pkill -9 -f easyworker-darwin 2>/dev/null || true
 pkill -9 -f 'easystream serve' 2>/dev/null || true
 sleep 1
 rm -f "$WROOT/easystream" "$WROOT/easystream.dl" \
-      "$WROOT/agent-worker-darwin" "$WROOT/agent-worker-darwin.dl" \
+      "$WROOT/easyworker-darwin" "$WROOT/easyworker-darwin.dl" \
       "$WROOT/oem.sh" 2>/dev/null || true
 rm -rf "$WROOT/workspace" "$WROOT/ws" 2>/dev/null || true
-rm -f /Library/Logs/agent-worker.log 2>/dev/null || true
+rm -f /Library/Logs/easyworker.log 2>/dev/null || true
 echo '== 8. final: /Users/docker (ours) =='
 ls -la "$WROOT" | grep -vE '^total|Desktop|Documents|Downloads|Library|Movies|Music|Pictures|Public|Trash|CFUser|^d.*\.$|^d.*\.\.$' || true

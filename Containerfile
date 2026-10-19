@@ -1,4 +1,4 @@
-# agent-worker macOS sandbox — self-owned runtime, pre-baked disk, boot only.
+# easyworker macOS sandbox — self-owned runtime, pre-baked disk, boot only.
 #
 # No upstream sandbox image is referenced. The runtime is the generic
 # qemux/qemu Debian base plus a vendored copy of the macOS boot scripts
@@ -94,7 +94,7 @@ COPY disk/support/macos.rom  /opt/macboot/15/macos.rom
 COPY disk/support/macos.sn   /opt/macboot/15/macos.sn
 COPY disk/support/macos.vars /opt/macboot/15/macos.vars
 
-# --- agent-worker + easystream (both boot-fetched by the guest) ------------
+# --- easyworker + easystream (both boot-fetched by the guest) ------------
 # The guest launcher downloads both on every boot (nginx :8090 /worker and
 # /easystream): an upgrade is an image change, never a golden rebake. There is
 # NO disk fallback — the container always serves them.
@@ -106,18 +106,18 @@ ARG EASYSTREAM_VERSION=v0.1.0
 ARG RELEASE_PROXY
 ARG RELEASE_CACHEBUST
 RUN set -eux; echo "release cachebust ${RELEASE_CACHEBUST}"; \
-    mkdir -p /opt/agent-worker; \
+    mkdir -p /opt/easyworker; \
     for spec in \
-      "agent-worker|https://github.com/easydev-org/easyworker/releases/download/${WORKER_VERSION}/agent-worker-darwin-amd64" \
+      "easyworker|https://github.com/easydev-org/easyworker/releases/download/${WORKER_VERSION}/easyworker-darwin-amd64" \
       "easystream|https://github.com/easydev-org/easystream-macos/releases/download/${EASYSTREAM_VERSION}/easystream-darwin-amd64" ; do \
       name="${spec%%|*}"; url="${spec#*|}"; \
-      curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} -o "/opt/agent-worker/${name}" "${url}"; \
+      curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} -o "/opt/easyworker/${name}" "${url}"; \
     done; \
-    chmod 755 /opt/agent-worker/agent-worker /opt/agent-worker/easystream
+    chmod 755 /opt/easyworker/easyworker /opt/easyworker/easystream
 # The REAL launch logic. The on-disk loader (/Users/docker/bootstrap.sh, the
 # ONLY launch file on the golden disk) fetches this every boot, so ALL launch
 # behaviour is an image change (no golden-disk rebake).
-COPY --chmod=644 guest/oem.sh /opt/agent-worker/oem.sh
+COPY --chmod=644 guest/oem.sh /opt/easyworker/oem.sh
 
 # --- token/worker bridge (no sidecar) -------------------------------------
 # /run/start.sh is sourced before the VM starts; nginx already includes

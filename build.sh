@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and push the agent-worker macOS (Sequoia) VM image.
+# Build and push the easyworker macOS (Sequoia) VM image.
 #
 #   ./agent-toolchain/vm/macos/build.sh [base|xcode]
 #
@@ -15,7 +15,7 @@
 #   <variant>/disk/data.qcow2        the guest disk
 #   <variant>/disk/support/          boot.img, macos.rom/vars, identity
 #
-# Prerequisites: dist/agent-worker-darwin-amd64 (scripts/build-all.sh).
+# Prerequisites: dist/easyworker-darwin-amd64 (scripts/build-all.sh).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${DIR}/../../.." && pwd)"
@@ -113,17 +113,8 @@ echo "  disk: $(du -h "${WORK}/disk/data.qcow2" | cut -f1) (EMBED_DISK=${EMBED_D
   --opt "build-arg:RELEASE_CACHEBUST=$(date +%s)" \
   --opt "build-arg:WORKER_OS=${WORKER_OS}" \
   --opt "build-arg:GOLDEN_DISK_URL=${GOLDEN_DISK_URL}" \
-  --output "type=oci,dest=${WORK}/image.oci,compression=zstd" \
+  --output "type=image,name=${DEST},push=true,registry.insecure=true,compression=zstd" \
   --progress plain
 
 echo "Pushing to ${DEST}"
-mkdir -p "${WORK}/oci" && tar -xf "${WORK}/image.oci" -C "${WORK}/oci"
-skopeo copy --src-tls-verify=false --dest-tls-verify=false \
-  --dest-creds "${FORGEJO_USER:-root}:${FORGEJO_PASS:-devpassword}" \
-  "oci:${WORK}/oci" "docker://${DEST}"
-
-echo "Verifying push:"
-skopeo inspect --creds "${FORGEJO_USER:-root}:${FORGEJO_PASS:-devpassword}" \
-  --tls-verify=false "docker://${DEST}" >/dev/null 2>&1 \
-  && echo "OK ${DEST}" \
-  || echo "inspect failed for ${DEST} (image may still be present)"
+echo "pushed by buildctl: ${DEST}"
