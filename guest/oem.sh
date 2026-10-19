@@ -41,6 +41,13 @@ done
 WORKER_TOKEN=$(printf '%s\n' "$PODENV" | sed -n 's/^WORKER_TOKEN=//p' | tr -d '\r')
 SANDBOX_PROXY=$(printf '%s\n' "$PODENV" | sed -n 's/^SANDBOX_PROXY=//p' | tr -d '\r')
 [ -n "$WORKER_TOKEN" ] && export WORKER_TOKEN
+# The daemon must be LOCKED: control needs a token (default to the worker's own
+# token), view stays open. Without it easystream would run unauthenticated and
+# any process that reached :48079/:48078 could drive the guest.
+EAZYSTREAM_CONTROL_TOKEN=$(printf '%s\n' "$PODENV" | sed -n 's/^EAZYSTREAM_CONTROL_TOKEN=//p' | tr -d '\r')
+EAZYSTREAM_VIEW_TOKEN=$(printf '%s\n' "$PODENV" | sed -n 's/^EAZYSTREAM_VIEW_TOKEN=//p' | tr -d '\r')
+[ -n "$EAZYSTREAM_CONTROL_TOKEN" ] || EAZYSTREAM_CONTROL_TOKEN="$WORKER_TOKEN"
+export EAZYSTREAM_CONTROL_TOKEN EAZYSTREAM_VIEW_TOKEN
 # The deployment HTTP proxy: jobs (git/npm/go) reach the blocked internet only
 # through it. Jobs inherit the worker's env, so export it here.
 if [ -n "$SANDBOX_PROXY" ]; then
@@ -105,6 +112,17 @@ if [ -x "$NA_BIN" ]; then
 </dict>
 </plist>
 PLIST
+    # launchd does NOT inherit this shell's environment, so the control token
+    # must be written into the plist itself — otherwise the daemon starts with
+    # no token (unauthenticated: anyone who reaches :48079 gets control).
+    if [ -n "$EAZYSTREAM_CONTROL_TOKEN" ]; then
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN string '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:EAZYSTREAM_CONTROL_TOKEN '$EAZYSTREAM_CONTROL_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist"
+    fi
+    if [ -n "$EAZYSTREAM_VIEW_TOKEN" ]; then
+      /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:EAZYSTREAM_VIEW_TOKEN string '$EAZYSTREAM_VIEW_TOKEN'" "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist" 2>/dev/null || true
+    fi
     chown docker:staff "$WROOT/Library/LaunchAgents/com.agentworker.easystream.plist"
     # Grant the screen-capture / accessibility TCC permissions to the daemon's
     # stable path, then restart tccd so it re-reads the db (the daemon is
