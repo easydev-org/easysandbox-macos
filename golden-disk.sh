@@ -33,14 +33,31 @@ trap '_gd_log "FAILED at line ${LINENO} (rc=$?)"' ERR
 : "${GOLDEN_DISK_CACHE:="/storage/.cache"}"
 : "${DISK_FILE:="/storage/data.qcow2"}"
 : "${DISK_SIZE:="128G"}"
+# A READ-ONLY golden master, when mounted, is used as the qcow2 BACKING FILE and
+# every write goes to an overlay on the writable volume. Set GOLDEN_RO_FILE to
+# its path (e.g. /storage/golden/data.qcow2) to enable this mode.
+: "${GOLDEN_RO_FILE:=""}"
 
-if [ -z "${GOLDEN_DISK_URL}" ]; then
+# With a read-only master mounted there is nothing to download, so an empty
+# GOLDEN_DISK_URL is EXPECTED and must not short-circuit here — doing so skipped
+# the overlay creation and left the boot with no disk at all
+# ("No guest disk at /storage/data.qcow2").
+if [ -z "${GOLDEN_DISK_URL}" ] && [ -z "${GOLDEN_RO_FILE}" ]; then
   _gd_log "GOLDEN_DISK_URL unset; using the image-embedded disk (${DISK_FILE})"
   return 0
+fi
+if [ -n "${GOLDEN_RO_FILE}" ]; then
+  _gd_log "read-only master mode: overlay ${DISK_FILE} <- ${GOLDEN_RO_FILE}"
+  _gd_ro_mode=1
 fi
 
 _gd_log "start: url=${GOLDEN_DISK_URL} disk=${DISK_FILE} cache=${GOLDEN_DISK_CACHE}"
 command -v qemu-img >/dev/null 2>&1 || { _gd_log "qemu-img not found"; exit 1; }
+
+# Read-only master mode: no fetch, no cache — go straight to building the
+# overlay further down. The whole download/verify block below is meaningless
+# when the base is a mounted file.
+if [ -z "${GOLDEN_RO_FILE}" ]; then
 
 mkdir -p "${GOLDEN_DISK_CACHE}"
 avail_kb=$(df -Pk "${GOLDEN_DISK_CACHE}" | awk 'NR==2{print $4}')
@@ -50,28 +67,21 @@ base="${GOLDEN_DISK_CACHE}/base-${key}.qcow2"
 
 # --- content-aware invalidation --------------------------------------------
 # A cache keyed on the URL ALONE never notices that the artifact at that URL was
-# REPLACED (a re-baked golden disk uploaded to the same path). The node would
-# then serve a stale base forever. Probe the remote's size + validator and, when
-# the cached copy no longer matches, drop it so it is re-fetched below.
+# REPLACED (a re-baked golden disk uploaded to the same path). Probe the remote's
+# size and drop a stale cached copy so it is re-fetched below.
 _gd_remote_meta() {
-  # Echo "<size>|<etag-or-last-modified>" for the remote, or "" when unknown.
-  local hdrs clen val
+  local hdrs clen
   command -v curl >/dev/null 2>&1 || return 0
   hdrs="$(curl -fsSL -I --connect-timeout 20 "${GOLDEN_DISK_URL}" 2>/dev/null || true)"
   [ -n "${hdrs}" ] || return 0
   clen="$(printf '%s\n' "${hdrs}" | awk 'tolower($1)=="content-length:"{v=$2} END{print v}' | tr -d '\r')"
-  val="$(printf '%s\n' "${hdrs}" | awk 'tolower($1)=="etag:"{v=$2} tolower($1)=="last-modified:"{v=$2" "$3" "$4" "$5" "$6} END{print v}' | tr -d '\r')"
-  [ -n "${clen}${val}" ] && printf '%s|%s' "${clen}" "${val}"
+  [ -n "${clen}" ] && printf '%s' "${clen}"
 }
 if [ -s "${base}" ]; then
   want="$(_gd_remote_meta)"
-  if [ -n "${want}" ]; then
-    have="$(wc -c <"${base}")"
-    want_size="${want%%|*}"
-    if [ -n "${want_size}" ] && [ "${have}" != "${want_size}" ]; then
-      _gd_log "cached base is STALE (cached=${have}B remote=${want_size}B); refetching"
-      rm -f "${base}"
-    fi
+  if [ -n "${want}" ] && [ "$(wc -c <"${base}")" != "${want}" ]; then
+    _gd_log "cached base is STALE (cached=$(wc -c <"${base}")B remote=${want}B); refetching"
+    rm -f "${base}"
   fi
 fi
 
@@ -114,26 +124,50 @@ if [ "${fmt}" != "qcow2" ]; then
   exit 1
 fi
 
-# --- persistent disk (NO overlay) -------------------------------------------
-# The disk lives on a PVC (/storage), so it MUST persist across pod restarts:
-# the guest's enrollment/token and user state are on it. We therefore seed it
-# ONCE from the golden base as a STANDALONE qcow2 (qemu-img convert, no backing
-# file) and afterwards reuse it as-is. We do NOT compare it against the golden
-# base: a re-baked base (new size/etag) must never wipe a live sandbox's disk.
+fi  # end of the fetch/verify path (skipped in read-only master mode)
+
+# --- the live disk -----------------------------------------------------------
+# Two modes, chosen by whether a read-only golden master is mounted.
+#
+# (a) GOLDEN_RO_FILE set — the master is on a READ-ONLY volume, so it can never
+#     be modified, and DISK_FILE is an OVERLAY whose backing file is the master.
+#     Every guest write lands in the overlay (a few MB at first), which lives on
+#     the writable PVC. Resetting a sandbox is then "delete the overlay", and the
+#     master stays pristine forever. This is why the master is read-only: a
+#     Windows update must not be able to redefine what "golden" means.
+#
+# (b) not set — the legacy behaviour: seed a STANDALONE copy of the base on the
+#     writable PVC and reuse it as-is. Kept for images that still embed a disk or
+#     mount a single writable volume.
 mkdir -p "$(dirname "${DISK_FILE}")"
-if [ -s "${DISK_FILE}" ]; then
-  _gd_log "persistent disk present, reusing as-is: ${DISK_FILE}"
+if [ -n "${GOLDEN_RO_FILE}" ]; then
+  [ -s "${GOLDEN_RO_FILE}" ] || { _gd_log "read-only golden master missing: ${GOLDEN_RO_FILE}"; exit 1; }
+  # No cache to clean here: read-only master mode never downloaded a base, so
+  # `base` is undefined (and `set -u` would abort on referencing it).
+  if [ -s "${DISK_FILE}" ]; then
+    _gd_log "overlay present, reusing: ${DISK_FILE} (backing ${GOLDEN_RO_FILE})"
+  else
+    _gd_log "creating overlay ${DISK_FILE} backed by read-only ${GOLDEN_RO_FILE}"
+    tmp="${DISK_FILE}.new.$$"
+    # -F qcow2: state the backing format so qemu does not have to probe (and so
+    # the overlay keeps working if the master path is later mounted read-only).
+    qemu-img create -f qcow2 -b "${GOLDEN_RO_FILE}" -F qcow2 "${tmp}" >/dev/null \
+      || { _gd_log "qemu-img create (backing) failed"; exit 1; }
+    mv -f "${tmp}" "${DISK_FILE}"
+  fi
 else
-  _gd_log "seeding persistent disk from golden base: ${DISK_FILE}"
-  tmp="${DISK_FILE}.seed.$$"
-  # convert copies the base's contents into a self-contained qcow2 (no backing
-  # dependency), so the shared read-only base can even be deleted afterwards.
-  qemu-img convert -O qcow2 "${base}" "${tmp}"
-  mv -f "${tmp}" "${DISK_FILE}"
+  if [ -s "${DISK_FILE}" ]; then
+    _gd_log "persistent disk present, reusing as-is: ${DISK_FILE}"
+  else
+    _gd_log "seeding persistent disk from golden base: ${DISK_FILE}"
+    tmp="${DISK_FILE}.seed.$$"
+    qemu-img convert -O qcow2 "${base}" "${tmp}"
+    mv -f "${tmp}" "${DISK_FILE}"
+  fi
+  # The standalone disk no longer depends on the shared base, so drop the cache
+  # to keep the (often small) PVC from carrying a second multi-GB copy.
+  rm -f "${base}" 2>/dev/null || true
 fi
-# The standalone disk no longer depends on the shared base, so drop the cache
-# to keep the (often small) PVC from carrying a second multi-GB copy.
-rm -f "${base}" 2>/dev/null || true
 
 export DISK_FMT="qcow2"
 return 0

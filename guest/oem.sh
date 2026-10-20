@@ -78,6 +78,37 @@ fi
 mkdir -p "$WS"
 cd "$WROOT"
 
+# --- BlackHole: the audio loopback -----------------------------------------
+# easystream captures the guest's SYSTEM audio with a BlackHole loopback inside
+# a clocked aggregate device. Without the driver there is simply no audio
+# capture path: /capabilities reports audio=None and the stream carries video
+# only. (This was silently missing: the driver had been installed by hand once
+# in a live guest, so a freshly imaged disk had video but no sound.)
+#
+# The driver ships IN THE IMAGE and is boot-fetched from nginx, exactly like
+# oem.sh and the worker: an upgrade is an image change, the guest needs no
+# internet, and the build is reproducible from a git clone.
+#
+# It is a user-space HAL plugin (NOT a kext), so no SIP / kext-consent change is
+# needed; coreaudiod rescans the HAL directory on restart.
+HB_BH=/Library/Audio/Plug-Ins/HAL/BlackHole.driver
+if [ ! -d "$HB_BH" ]; then
+  if curl -s -m 60 -o /tmp/blackhole.tgz http://host.lan:8090/blackhole 2>/dev/null \
+     && [ "$(stat -f%z /tmp/blackhole.tgz 2>/dev/null || echo 0)" -gt 10000 ]; then
+    mkdir -p /Library/Audio/Plug-Ins/HAL
+    if tar xzf /tmp/blackhole.tgz -C /Library/Audio/Plug-Ins/HAL/ 2>/dev/null; then
+      chown -R root:wheel "$HB_BH" 2>/dev/null || true
+      killall coreaudiod 2>/dev/null || true
+      sleep 3
+      echo "audio: BlackHole installed"
+    else
+      echo "audio: WARNING BlackHole unpack failed" >&2
+    fi
+  else
+    echo "audio: WARNING BlackHole unavailable from the image" >&2
+  fi
+fi
+
 # --- easystream (est://) daemon: boot-fetch + start ------------------------
 # The Go worker talks to easystream over est:// on 127.0.0.1:48079. Fetch it
 # every boot (image change, never a golden rebake) and start it BEFORE the

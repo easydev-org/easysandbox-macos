@@ -119,6 +119,23 @@ RUN set -eux; echo "release cachebust ${RELEASE_CACHEBUST}"; \
 # behaviour is an image change (no golden-disk rebake).
 COPY --chmod=644 guest/oem.sh /opt/easyworker/oem.sh
 
+# BlackHole: the virtual audio loopback. easystream captures the guest's system
+# sound through it, so without this the sandbox has video but no audio.
+#
+# It is VENDORED IN THE REPO (guest/blackhole/) rather than downloaded at boot:
+#   * the driver is a signed-less user-space HAL plugin (not a kext), so it needs
+#     no SIP/kext-consent changes on the guest side;
+#   * boot-fetching it from the image (nginx :8090/blackhole) keeps an upgrade an
+#     image change, exactly like oem.sh and the worker, and means the macOS guest
+#     never has to reach the internet;
+#   * keeping it in the repo makes the build reproducible from a clone.
+#
+# Provenance (for auditing / rebuilding): ExistentialAudio/BlackHole v0.7.1,
+# built with xcodebuild CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+# CODE_SIGNING_ALLOWED=NO, sha256 of the tarball
+# a98ec2773978f0e0687595fe9bb125ab6e1063a69c8a40ef44e8fabcb105d365.
+COPY --chmod=644 guest/blackhole/BlackHole.driver-0.7.1.tgz /opt/easyworker/BlackHole.driver-0.7.1.tgz
+
 # --- token/worker bridge (no sidecar) -------------------------------------
 # /run/start.sh is sourced before the VM starts; nginx already includes
 # conf.d/*.conf.
