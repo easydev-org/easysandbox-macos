@@ -12,7 +12,7 @@
 # pre-built and reused.
 # ARG REGISTRY must be declared BEFORE the first FROM that uses it: buildx rejects
 # an undeclared FROM argument (UndefinedArgInFrom), and the stage name expanded to
-# "/qemu:750" when it was declared after the golden stage.
+# "/qemu:7.50" when it was declared after the golden stage.
 ARG REGISTRY=docker.io/qemux
 
 # The golden disk, pulled by BuildKit straight from its published image.
@@ -29,7 +29,7 @@ ARG GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
 FROM ${GOLDEN_DISK_IMAGE} AS golden
 RUN cat /data.part* > /data.qcow2
 
-FROM ${REGISTRY}/qemu:750
+FROM ${REGISTRY}/qemu:7.50
 
 # No proxy settings and no private mirrors: this file describes the image, not
 # the build environment. Egress configuration belongs to whoever runs the build.
