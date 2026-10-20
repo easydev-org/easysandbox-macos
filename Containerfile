@@ -85,9 +85,16 @@ COPY --chmod=644 vendor/version /etc/version
 # It lands in /opt/golden-disk, NOT /storage: /storage is where the writable
 # volume is mounted, so a copy there would be hidden by the mount.
 #
-# Reassembled from the published golden image in the `golden` stage above. A
-# single COPY of the finished file produces exactly one layer.
-COPY --from=golden /data.qcow2 /opt/golden-disk/data.qcow2
+# The pieces are copied in and JOINED HERE, not in the golden stage: that stage is
+# the disk image itself, which is pure data and has no /bin/sh to run `cat` with
+#   runc run failed: exec: "/bin/sh": stat /bin/sh: no such file or directory
+#
+# One RUN keeps the finished 17 GiB disk in a single layer.
+COPY --from=golden /data.part* /tmp/golden/
+RUN mkdir -p /opt/golden-disk \
+    && cat /tmp/golden/data.part* > /opt/golden-disk/data.qcow2 \
+    && rm -rf /tmp/golden \
+    && ls -l /opt/golden-disk/data.qcow2
 COPY disk/support/boot.img   /storage/15/boot.img
 COPY disk/support/boot.sig   /storage/15/boot.sig
 COPY disk/support/macos.id   /storage/15/macos.id
