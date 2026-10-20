@@ -1,0 +1,78 @@
+name: image
+
+# Build the macOS sandbox image and push it to ghcr.
+#
+# The image EMBEDS the golden guest disk (17 GiB). It is immutable golden state,
+# so it belongs in a layer rather than in an artifact store a pod must reach at
+# start-up; embedding also means a start is instant instead of a multi-GB fetch.
+#
+# The disk lives on ghcr as golden-macos:base (9 layers). This job pulls it,
+# concatenates the layers in order, verifies the sha256 from the manifest
+# annotation, and hands the file to the image build.
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths: ["Containerfile", "sandbox.sh", "golden-disk.sh", "guest/**", "00-token.conf", ".github/workflows/release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/easydev-org/sandbox-macos
+  WORKER_VERSION: v0.3.8
+  EASYSTREAM_VERSION: v0.1.5
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: fetch the golden disk
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p disk
+          python3 scripts/ghcr_pull_disk.py macos disk/data.qcow2
+          ls -l disk/data.qcow2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 17 GiB disk + build layers. A stock runner has ~30 GB free, which is
+      # tight; drop the preinstalled toolchains that this build never uses.
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            WORKER_VERSION=${{ env.WORKER_VERSION }}
+            EASYSTREAM_VERSION=${{ env.EASYSTREAM_VERSION }}
+            RELEASE_CACHEBUST=${{ github.run_id }}
+          # gha cache with a 17 GiB disk layer would be enormous; keep it minimal.
+          cache-from: type=gha
+          cache-to: type=gha,mode=min

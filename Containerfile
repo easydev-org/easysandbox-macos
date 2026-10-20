@@ -10,17 +10,11 @@
 # or installs macOS. `openCoreSignature()` still hashes /opencore.iso, /vmh.zip
 # and /assets/config.plist, so those three stay even though the boot image is
 # pre-built and reused.
-ARG REGISTRY=git.agent.svc.cluster.local/root
+ARG REGISTRY=docker.io/qemux
 FROM ${REGISTRY}/qemu:750
 
-# In-cluster artifact mirror for apt (fast, reachable from the build node); set
-# via --build-arg. When empty, the image's own sources are used.
-ARG ARTIFACT=""
-
-# The build proxy must NOT be used for the in-cluster artifact mirror (it has no
-# route to it -> 404). This mirrors the desktop images' NO_PROXY.
-ENV NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,artifact.worker.svc.cluster.local \
-    no_proxy=localhost,127.0.0.1,.svc.cluster.local,.svc,artifact.worker.svc.cluster.local
+# No proxy settings and no private mirrors: this file describes the image, not
+# the build environment. Egress configuration belongs to whoever runs the build.
 
 # --- OpenCore boot-image rebuild tools -------------------------------------
 # The boot image is normally reused as-is, but a change to /assets/config.plist
@@ -31,11 +25,13 @@ ENV NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc,artifact.worker.svc.clu
 # vmh.zip). The upstream installer image carries these; this boot-only image
 # must add them.
 RUN set -eux; \
-    echo "apt via ${ARTIFACT:-image sources}"; \
-    if [ -n "${ARTIFACT:-}" ]; then \
-      rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list; \
-      printf 'deb [trusted=yes] %s/artifacts/debian/debian trixie main\n' "${ARTIFACT}" > /etc/apt/sources.list.d/artifact.list; \
-    fi; \
+    # Aliyun over HTTPS: reachable from a CI runner and from the cluster alike,
+    # and https because some egress proxies refuse plain http:// and report it
+    # misleadingly as a missing Release file.
+    rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list; \
+    printf 'deb https://mirrors.aliyun.com/debian trixie main\n' > /etc/apt/sources.list; \
+    printf 'deb https://mirrors.aliyun.com/debian trixie-updates main\n' >> /etc/apt/sources.list; \
+    printf 'deb https://mirrors.aliyun.com/debian-security trixie-security main\n' >> /etc/apt/sources.list; \
     apt-get -o Acquire::Retries=10 update; \
     for i in 1 2 3 4 5 6; do \
       apt-get -o Acquire::Retries=10 install -y --no-install-recommends \
@@ -63,17 +59,18 @@ COPY --chmod=644 vendor/version /etc/version
 # weight. The boot image, firmware and machine identity are pre-built and are
 # reused as-is (their signature is unchanged, so boot.sh skips rebuilding them).
 #
-# EMBED_DISK=0 drops the (multi-GB) disk from the image; the disk is then
-# fetched at run time from the artifact-published golden base and a per-sandbox
-# overlay is created (see golden-disk.sh + GOLDEN_DISK_URL). Default 1 keeps the
-# historical embedded-disk image.
-ARG EMBED_DISK=1
-# The disk is written via a bind mount so it lands in EXACTLY ONE layer when
-# embedded (a plain `COPY` followed by a `RUN mv` would store it TWICE — the
-# multi-GB disk in two identical layers). With EMBED_DISK=0 nothing is written
-# (the disk is fetched at run time from GOLDEN_DISK_URL).
+# The disk is ALWAYS embedded. There used to be an EMBED_DISK=0 mode that fetched
+# it at run time from an in-cluster artifact store; that tied the image to one
+# environment and made every start pay a 17 GiB download for immutable golden
+# state.
+#
+# It lands in /opt/golden-disk, NOT /storage: /storage is where the writable
+# volume is mounted, so a copy there would be hidden by the mount.
+#
+# The disk is written via a bind mount so it lands in EXACTLY ONE layer (a plain
+# `COPY` of a multi-GB file that is then moved would store it TWICE).
 RUN --mount=type=bind,source=disk/data.qcow2,target=/tmp/disk.qcow2 \
-    mkdir -p /storage/15 && if [ "${EMBED_DISK}" = "1" ]; then cp /tmp/disk.qcow2 /storage/15/data.qcow2; fi
+    mkdir -p /opt/golden-disk && cp /tmp/disk.qcow2 /opt/golden-disk/data.qcow2
 COPY disk/support/boot.img   /storage/15/boot.img
 COPY disk/support/boot.sig   /storage/15/boot.sig
 COPY disk/support/macos.id   /storage/15/macos.id
