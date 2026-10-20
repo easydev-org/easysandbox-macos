@@ -32,19 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: fetch the golden disk
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          mkdir -p disk
-          python3 scripts/ghcr_pull_disk.py macos disk/data.qcow2
-          ls -l disk/data.qcow2
-
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -52,6 +39,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The golden disk is NOT downloaded here.
+      #
+      # The Containerfile does `FROM ghcr.io/easydev-org/golden-disk-macos:base AS
+      # golden` and reassembles the qcow2 inside that stage, so BuildKit pulls the
+      # pieces with its own registry client. That matters at this size: 17 GiB of
+      # pieces plus a 17 GiB joined file is 34 GiB, and a runner has ~30 GiB free.
 
       # 17 GiB disk + build layers. A stock runner has ~30 GB free, which is
       # tight; drop the preinstalled toolchains that this build never uses.
@@ -73,6 +67,8 @@ jobs:
             WORKER_VERSION=${{ env.WORKER_VERSION }}
             EASYSTREAM_VERSION=${{ env.EASYSTREAM_VERSION }}
             RELEASE_CACHEBUST=${{ github.run_id }}
+            # Overridable so a test build can point at a different disk.
+            GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
           # gha cache with a 17 GiB disk layer would be enormous; keep it minimal.
           cache-from: type=gha
           cache-to: type=gha,mode=min

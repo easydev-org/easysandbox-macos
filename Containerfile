@@ -10,6 +10,20 @@
 # or installs macOS. `openCoreSignature()` still hashes /opencore.iso, /vmh.zip
 # and /assets/config.plist, so those three stay even though the boot image is
 # pre-built and reused.
+# The golden disk, pulled by BuildKit straight from its published image.
+#
+# 17 GiB is above what a registry accepts in one layer, so the disk is published
+# as a tag whose LAYERS are consecutive pieces of the qcow2 (9 of them here).
+# This stage reassembles them; it exists only while building and never reaches
+# the final image.
+#
+# Reassembling here rather than with a download script means BuildKit pulls and
+# caches the pieces itself: retries are its problem, and the pieces plus the
+# joined file (34 GiB) never both sit on a runner with ~30 GiB free.
+ARG GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
+FROM ${GOLDEN_DISK_IMAGE} AS golden
+RUN cat /data.part* > /data.qcow2
+
 ARG REGISTRY=docker.io/qemux
 FROM ${REGISTRY}/qemu:750
 
@@ -67,10 +81,9 @@ COPY --chmod=644 vendor/version /etc/version
 # It lands in /opt/golden-disk, NOT /storage: /storage is where the writable
 # volume is mounted, so a copy there would be hidden by the mount.
 #
-# The disk is written via a bind mount so it lands in EXACTLY ONE layer (a plain
-# `COPY` of a multi-GB file that is then moved would store it TWICE).
-RUN --mount=type=bind,source=disk/data.qcow2,target=/tmp/disk.qcow2 \
-    mkdir -p /opt/golden-disk && cp /tmp/disk.qcow2 /opt/golden-disk/data.qcow2
+# Reassembled from the published golden image in the `golden` stage above. A
+# single COPY of the finished file produces exactly one layer.
+COPY --from=golden /data.qcow2 /opt/golden-disk/data.qcow2
 COPY disk/support/boot.img   /storage/15/boot.img
 COPY disk/support/boot.sig   /storage/15/boot.sig
 COPY disk/support/macos.id   /storage/15/macos.id
