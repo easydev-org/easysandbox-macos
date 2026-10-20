@@ -129,7 +129,7 @@ RUN set -eux; echo "release cachebust ${RELEASE_CACHEBUST}"; \
     mkdir -p /opt/easyworker; \
     for spec in \
       "easyworker|https://github.com/easydev-org/easyworker/releases/download/${WORKER_VERSION}/easyworker-darwin-amd64" \
-      "easystream|https://github.com/easydev-org/easystream-macos/releases/download/${EASYSTREAM_VERSION}/easystream-darwin-amd64" ; do \
+      "easystream|https://github.com/easydev-org/easystream-macos/releases/download/${EASYSTREAM_VERSION}/easystream-macos-amd64" ; do \
       name="${spec%%|*}"; url="${spec#*|}"; \
       curl -fsSL ${RELEASE_PROXY:+-x "${RELEASE_PROXY}"} -o "/opt/easyworker/${name}" "${url}"; \
     done; \
