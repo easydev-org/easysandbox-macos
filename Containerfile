@@ -27,7 +27,6 @@ ARG REGISTRY=docker.io/qemux
 # joined file (34 GiB) never both sit on a runner with ~30 GiB free.
 ARG GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
 FROM ${GOLDEN_DISK_IMAGE} AS golden
-RUN cat /data.part* > /data.qcow2
 
 FROM ${REGISTRY}/qemu:7.50
 

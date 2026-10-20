@@ -23,14 +23,29 @@ permissions:
 
 env:
   IMAGE: ghcr.io/easydev-org/sandbox-macos
-  WORKER_VERSION: v0.3.8
-  EASYSTREAM_VERSION: v0.1.5
+  # Resolved from the latest release at build time. Pinned values rot: the
+  # Containerfile downloads .../releases/download/${EASYSTREAM_VERSION}/..., so a
+  # stale tag becomes a 404 the next time a release is cut.
+  WORKER_REPO: easydev-org/easyworker
+  EASYSTREAM_REPO: easydev-org/easystream-macos
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: resolve release versions
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          w=$(gh release view --repo "$WORKER_REPO" --json tagName -q .tagName)
+          e=$(gh release view --repo "$EASYSTREAM_REPO" --json tagName -q .tagName)
+          echo "worker=$w easystream=$e"
+          echo "worker=$w" >> "$GITHUB_OUTPUT"
+          echo "easystream=$e" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -77,8 +92,8 @@ jobs:
             ${{ env.IMAGE }}:${{ github.ref_name }}
             ${{ env.IMAGE }}:latest
           build-args: |
-            WORKER_VERSION=${{ env.WORKER_VERSION }}
-            EASYSTREAM_VERSION=${{ env.EASYSTREAM_VERSION }}
+            WORKER_VERSION=${{ steps.ver.outputs.worker }}
+            EASYSTREAM_VERSION=${{ steps.ver.outputs.easystream }}
             RELEASE_CACHEBUST=${{ github.run_id }}
             # Overridable so a test build can point at a different disk.
             GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
