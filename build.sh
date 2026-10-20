@@ -66,7 +66,7 @@ BUILDCTL="${BUILDCTL:-$(command -v buildctl || true)}"
 # from the artifact golden base + per-sandbox overlay — see golden-disk.sh).
 EMBED_DISK="${EMBED_DISK:-1}"
 
-for f in "${DIR}/Containerfile" "${DIR}/00-token.conf" "${DIR}/start.sh" "${DIR}/golden-disk.sh"; do
+for f in "${DIR}/Containerfile" "${DIR}/00-token.conf" "${DIR}/sandbox.sh" "${DIR}/golden-disk.sh"; do
   [ -e "$f" ] || { echo "missing $f" >&2; exit 1; }
 done
 [ "${EMBED_DISK}" = "1" ] && [ ! -e "${DISK}" ] && { echo "missing disk ${DISK} (or set EMBED_DISK=0)" >&2; exit 1; }
@@ -77,7 +77,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 mkdir -p "${WORK}/disk/support"
 cp "${DIR}/Containerfile" "${WORK}/Dockerfile"
-cp "${DIR}/00-token.conf" "${DIR}/start.sh" "${WORK}/"
+cp "${DIR}/00-token.conf" "${WORK}/"
 # The single boot script (replaces the vendored vendor/run/*.sh boot chain).
 cp "${DIR}/sandbox.sh" "${WORK}/"
 # NOTE: neither the worker nor easystream is staged here — the Containerfile
@@ -102,6 +102,7 @@ echo "  disk: $(du -h "${WORK}/disk/data.qcow2" | cut -f1) (EMBED_DISK=${EMBED_D
   --local "context=${WORK}" \
   --local "dockerfile=${WORK}" \
   --opt "filename=Dockerfile" \
+  --opt "no-cache=${NO_CACHE:-false}" \
   --opt "build-arg:REGISTRY=${REGISTRY}${REGISTRY_NS:+/${REGISTRY_NS}}" \
   --opt "build-arg:ARTIFACT=${ARTIFACT:-http://artifact.worker.svc.cluster.local}" \
   --opt "build-arg:HTTP_PROXY=${PROXY}" \

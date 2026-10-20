@@ -77,6 +77,17 @@ enabled() { case "${1^^}" in Y|YES|TRUE|1|ON) return 0;; *) return 1;; esac; }
 disabled() { ! enabled "$1"; }
 
 # ── 1. golden disk ─────────────────────────────────────────────────────────
+# Boot support files (boot.img, macos.rom/vars/...) are image-owned, not disk
+# state. They used to be restored by a start.sh that nothing sourced, so with an
+# empty /storage (the ephemeral case: an emptyDir, or a fresh PVC) the boot had a
+# disk but no firmware and QEMU would not start. Copy them from the image now.
+if [ -d /opt/macboot/15 ]; then
+  mkdir -p "$VMDIR" 2>/dev/null || true
+  for f in boot.img boot.sig macos.id macos.mac macos.mlb macos.rom macos.sn macos.vars; do
+    [ -s "$VMDIR/$f" ] || cp -f "/opt/macboot/15/$f" "$VMDIR/$f" 2>/dev/null || true
+  done
+fi
+
 if [ -f /run/golden-disk.sh ]; then . /run/golden-disk.sh; fi
 if [ ! -s "$DISK_FILE" ]; then
   err "No guest disk at $DISK_FILE (this image boots a pre-baked disk and never installs macOS)."
@@ -98,6 +109,32 @@ fi
   printf 'EAZYSTREAM_VIEW_TOKEN=%s\n' "${EAZYSTREAM_VIEW_TOKEN:-}"
 } > "$QEMU_DIR/env"
 chmod 644 "$QEMU_DIR/env" 2>/dev/null || true
+
+# --- pack every boot payload into ONE tar ----------------------------------
+# The guest used to fetch five separate nginx locations (/worker, /easystream,
+# /oem.sh, /blackhole, /aggregate). That meant five fetches, five chances to
+# fail, and a nginx edit whenever a payload was added. Now the guest downloads
+# /files once and unpacks it, and this list is the single source of truth.
+#
+# Built at boot (not baked) so it can never disagree with the binaries in the
+# image. Flat layout — the guest untars into one directory:
+#   oem.sh  easyworker  easystream  aggregate  BlackHole.driver-0.7.1.tgz
+BOOT_FILES="oem.sh easyworker easystream aggregate BlackHole.driver-0.7.1.tgz"
+(
+  cd /opt/easyworker 2>/dev/null || exit 0
+  present=""
+  for f in $BOOT_FILES; do
+    [ -e "$f" ] && present="$present $f"
+  done
+  if [ -n "$present" ]; then
+    # shellcheck disable=SC2086
+    tar -cf "$QEMU_DIR/files.tar" $present
+  else
+    : > "$QEMU_DIR/files.tar"
+  fi
+)
+chmod 644 "$QEMU_DIR/files.tar" 2>/dev/null || true
+log "boot payload: $(stat -c%s "$QEMU_DIR/files.tar" 2>/dev/null || echo 0) bytes in files.tar"
 
 # ── host detection ─────────────────────────────────────────────────────────
 is_amd_cpu() {

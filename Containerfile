@@ -141,19 +141,28 @@ COPY --chmod=644 guest/blackhole/BlackHole.driver-0.7.1.tgz /opt/easyworker/Blac
 # so easystream only has to open the default output and read the loopback — it
 # no longer needs to know about clocks, aggregates or device names.
 #
-# BOTH the source (guest/audio/aggregate.c, readable and reviewable) and the
-# binary are committed: the tool links the macOS CoreAudio/CoreFoundation
-# frameworks, so it can only be built on macOS and the build host for this image
-# is Linux. The binary is a plain x86_64 Mach-O, sha256
-# 1e72ce52daed4c8702d8...; rebuild it with the clang line in the .c header.
+# Swift, not C. The C version crashed inside CFDictionaryCreate while building the
+# aggregate description and died before printing anything, so all the boot saw was
+# a silent rc=139 — which under launchd's KeepAlive became an oem.sh restart every
+# 10 s and a guest running nothing but sshd. Swift gets the CoreFoundation
+# bridging right, and swiftc is only on macOS, so the binary is vendored next to
+# its source.
+#
+# BOTH are committed: guest/audio/aggregate.swift is the readable implementation,
+# guest/audio/aggregate-darwin-amd64 the x86_64 Mach-O it compiles to. Rebuild on
+# any Mac with:  swiftc -O -o aggregate aggregate.swift
 COPY --chmod=755 guest/audio/aggregate-darwin-amd64 /opt/easyworker/aggregate
-COPY --chmod=644 guest/audio/aggregate.c /opt/easyworker/aggregate.c
+COPY --chmod=644 guest/audio/aggregate.swift /opt/easyworker/aggregate.swift
 
 # --- token/worker bridge (no sidecar) -------------------------------------
-# /run/start.sh is sourced before the VM starts; nginx already includes
-# conf.d/*.conf.
+# nginx already includes conf.d/*.conf.
+#
+# NOTE: there is deliberately no /run/start.sh. This image's whole boot path is
+# sandbox.sh (COPYed below as /run/entry.sh), and that is where the guest env and
+# the /files payload tar are produced. A second "start.sh" used to be shipped here
+# and was never sourced by anything, which is worse than useless: it made it look
+# as though the env/tar step ran when it did not.
 COPY --chmod=644 00-token.conf /etc/nginx/conf.d/00-token.conf
-COPY --chmod=755 start.sh      /run/start.sh
 # Runtime disk materializer (fetches the artifact golden base + overlay); a
 # no-op unless GOLDEN_DISK_URL is set.
 COPY --chmod=755 golden-disk.sh /run/golden-disk.sh

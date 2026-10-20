@@ -6,15 +6,16 @@
 #   * as root via the one-shot LaunchDaemon (bootstrap/fallback).
 #
 # Responsibilities:
-#   1. fetch the pod-provided per-pod env (WORKER_TOKEN + SANDBOX_PROXY) from
+#   1. fetch EVERY boot payload in one request from http://host.lan:8090/files,
+#      which start.sh packs as a single tar (oem.sh, easyworker, easystream,
+#      the audio aggregate helper and the BlackHole driver). One fetch means one
+#      failure to report and no nginx edit when a payload is added. An upgrade is
+#      still an image change, not a golden-disk change.
+#   2. fetch the pod-provided per-pod env (WORKER_TOKEN + SANDBOX_PROXY) from
 #      http://host.lan:8090/env
-#   2. boot-fetch the current easyworker binary from
-#      http://host.lan:8090/worker (so a worker upgrade is an image change,
-#      not a golden-disk change), falling back to the baked copy
-#   3. boot-fetch the xa11y computer-use CLI from http://host.lan:8090/xa11y
-#      and grant it the Accessibility (TCC) permission (SIP is off in this
-#      image, so the TCC db is writable) — done as root before the worker
-#   4. start easyworker inside docker's GUI session
+#   3. install BlackHole and run the aggregate helper so system audio is wired
+#      before anything tries to capture it
+#   4. start easystream, then easyworker, inside docker's GUI session
 set -Eeuo pipefail
 
 WROOT=/Users/docker
@@ -29,6 +30,57 @@ TCC="/Library/Application Support/com.apple.TCC/TCC.db"
 # works for processes inside that user's Aqua session, so the daemon must be
 # launched with `launchctl asuser $AQUA_UID`.
 AQUA_UID="$(id -u docker 2>/dev/null || echo 501)"
+
+# --- make stdout safe -------------------------------------------------------
+# This script runs under launchd with KeepAlive=true, where stdout is a pipe
+# whose reader may already be gone; the first `echo` then raises SIGPIPE and
+# kills the run instantly (observed: oem.sh restarting every ~10s at its first
+# echo, with the guest left running nothing but sshd).
+#
+# So: ignore SIGPIPE, and redirect to a PER-INSTANCE log. Two instances run by
+# design (root's LaunchDaemon and docker's LaunchAgent) and a shared append can
+# fail for whichever user does not own the file — which killed the script BEFORE
+# the /env fetch, so the log must never be shared and must never be fatal.
+trap '' PIPE
+OEM_LOG="${WROOT:-$HOME}/workspace/oem-$(id -un).log"
+mkdir -p "$(dirname "$OEM_LOG")" 2>/dev/null || true
+if { true >>"$OEM_LOG"; } 2>/dev/null; then
+  exec >>"$OEM_LOG" 2>&1
+else
+  # Cannot write there: keep going with output discarded rather than die.
+  exec >/dev/null 2>&1
+fi
+echo "=== oem.sh $(date) pid=$$ user=$(id -un) ==="
+
+# --- fetch EVERY boot payload in one request -------------------------------
+# The container packs the worker, easystream, this script and the audio helper
+# into one tar at /files (see start.sh). One fetch, one failure to report, and
+# the container's file list is the single source of truth.
+#
+# Unpacked to $WROOT/boot so nothing lands on top of a running binary: the worker
+# and easystream are replaced below by copying from here, which is safe even if
+# the old one is executing.
+BOOTDIR="$WROOT/boot"
+rm -rf "$BOOTDIR" 2>/dev/null || true
+mkdir -p "$BOOTDIR" 2>/dev/null || true
+BOOT_OK=0
+for _ in $(seq 1 40); do
+  if curl -s -m 90 -o "$BOOTDIR.tar" http://host.lan:8090/files 2>/dev/null \
+     && [ "$(stat -f%z "$BOOTDIR.tar" 2>/dev/null || echo 0)" -gt 1000 ]; then
+    if tar xf "$BOOTDIR.tar" -C "$BOOTDIR" 2>/dev/null; then
+      BOOT_OK=1
+      break
+    fi
+  fi
+  rm -f "$BOOTDIR.tar" 2>/dev/null || true
+  sleep 2
+done
+if [ "$BOOT_OK" = 1 ]; then
+  chmod 755 "$BOOTDIR"/* 2>/dev/null || true
+  echo "boot: fetched $(stat -f%z "$BOOTDIR.tar" 2>/dev/null || echo 0) bytes, $(ls "$BOOTDIR" 2>/dev/null | tr '\n' ' ')"
+else
+  echo "boot: WARNING could not fetch /files; falling back to per-file fetch"
+fi
 
 # --- pod env (WORKER_TOKEN + SANDBOX_PROXY) -------------------------------
 # The guest does not inherit the pod's env; the container publishes the few
@@ -93,13 +145,20 @@ cd "$WROOT"
 # needed; coreaudiod rescans the HAL directory on restart.
 HB_BH=/Library/Audio/Plug-Ins/HAL/BlackHole.driver
 if [ ! -d "$HB_BH" ]; then
-  if curl -s -m 60 -o /tmp/blackhole.tgz http://host.lan:8090/blackhole 2>/dev/null \
-     && [ "$(stat -f%z /tmp/blackhole.tgz 2>/dev/null || echo 0)" -gt 10000 ]; then
+  if [ -s "$BOOTDIR/BlackHole.driver-0.7.1.tgz" ] \
+     && [ "$(stat -f%z "$BOOTDIR/BlackHole.driver-0.7.1.tgz" 2>/dev/null || echo 0)" -gt 10000 ]; then
     mkdir -p /Library/Audio/Plug-Ins/HAL
-    if tar xzf /tmp/blackhole.tgz -C /Library/Audio/Plug-Ins/HAL/ 2>/dev/null; then
+    if tar xzf "$BOOTDIR/BlackHole.driver-0.7.1.tgz" -C /Library/Audio/Plug-Ins/HAL/ 2>/dev/null; then
       chown -R root:wheel "$HB_BH" 2>/dev/null || true
       killall coreaudiod 2>/dev/null || true
-      sleep 3
+      # coreaudiod must be BACK before anything talks to CoreAudio. A fixed
+      # `sleep 3` was not enough: the aggregate helper then called into a
+      # restarting audio stack and the boot stalled right after /aggregate.
+      for _ in $(seq 1 30); do
+        pgrep -x coreaudiod >/dev/null 2>&1 && break
+        sleep 1
+      done
+      sleep 2
       echo "audio: BlackHole installed"
     else
       echo "audio: WARNING BlackHole unpack failed" >&2
@@ -120,12 +179,19 @@ fi
 # change, exactly like oem.sh itself.
 if [ -d "$HB_BH" ]; then
   AGG="$WROOT/aggregate"
-  if curl -s -m 60 -o "$AGG.dl" http://host.lan:8090/aggregate 2>/dev/null \
-     && [ "$(stat -f%z "$AGG.dl" 2>/dev/null || echo 0)" -gt 5000 ]; then
-    chmod 755 "$AGG.dl" && mv -f "$AGG.dl" "$AGG" 2>/dev/null || true
+  if [ -s "$BOOTDIR/aggregate" ] \
+     && [ "$(stat -f%z "$BOOTDIR/aggregate" 2>/dev/null || echo 0)" -gt 5000 ]; then
+    cp -f "$BOOTDIR/aggregate" "$AGG.dl" 2>/dev/null \
+      && chmod 755 "$AGG.dl" && mv -f "$AGG.dl" "$AGG" 2>/dev/null || true
   fi
   if [ -x "$AGG" ]; then
-    "$AGG" 2>&1 | while IFS= read -r l; do echo "audio: $l"; done
+    # Bound it: a CoreAudio call must never be able to hang the whole launch.
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 60 "$AGG" 2>&1 | while IFS= read -r l; do echo "audio: $l"; done
+    else
+      "$AGG" 2>&1 | while IFS= read -r l; do echo "audio: $l"; done
+    fi
+    echo "audio: aggregate helper done (rc=$?)"
   else
     echo "audio: WARNING aggregate helper unavailable from the image" >&2
   fi
@@ -136,7 +202,8 @@ fi
 # every boot (image change, never a golden rebake) and start it BEFORE the
 # worker so the first /stream/ws connection finds it listening.
 NA_BIN="$WROOT/easystream"
-if curl -s -m 60 -o "$NA_BIN.dl" http://host.lan:8090/easystream 2>/dev/null; then
+if [ -s "$BOOTDIR/easystream" ]; then
+  cp -f "$BOOTDIR/easystream" "$NA_BIN.dl" 2>/dev/null || true
   if [ "$(stat -f%z "$NA_BIN.dl" 2>/dev/null || echo 0)" -gt 10000 ]; then
     chmod 755 "$NA_BIN.dl"
     mv -f "$NA_BIN.dl" "$NA_BIN" 2>/dev/null || true
@@ -225,16 +292,20 @@ fi
 # here. If a resolution must be forced, bake it into the golden disk's
 # WindowServer prefs instead.
 
-# --- boot-fetch the worker binary (dynamic ONLY, no disk fallback) ----------
-# The container always serves the worker at host.lan:8090/worker. Fetch it on
-# every boot and run THAT binary; a worker upgrade must never require a golden
-# rebake. No disk fallback — if the fetch fails, retry until it succeeds.
+# --- install the worker binary (dynamic ONLY, no disk fallback) -------------
+# The worker arrives in the /files tar fetched at the top of this script, and is
+# installed on every boot, so a worker upgrade never needs a golden rebake. There
+# is deliberately no disk fallback: if the payload did not land, retry rather
+# than silently run a stale binary.
 for _ in $(seq 1 30); do
-  if curl -s -m 30 -o "$DL" http://host.lan:8090/worker 2>/dev/null \
-     && [ "$(stat -f%z "$DL" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-    chmod 755 "$DL"
-    mv -f "$DL" "$BIN" 2>/dev/null || BIN="$DL"
-    break
+  if [ -s "$BOOTDIR/easyworker" ] \
+     && [ "$(stat -f%z "$BOOTDIR/easyworker" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+    cp -f "$BOOTDIR/easyworker" "$DL" 2>/dev/null || true
+    if [ "$(stat -f%z "$DL" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+      chmod 755 "$DL"
+      mv -f "$DL" "$BIN" 2>/dev/null || BIN="$DL"
+      break
+    fi
   fi
   rm -f "$DL" 2>/dev/null || true
   sleep 2
