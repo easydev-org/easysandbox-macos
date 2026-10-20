@@ -10,6 +10,11 @@
 # or installs macOS. `openCoreSignature()` still hashes /opencore.iso, /vmh.zip
 # and /assets/config.plist, so those three stay even though the boot image is
 # pre-built and reused.
+# ARG REGISTRY must be declared BEFORE the first FROM that uses it: buildx rejects
+# an undeclared FROM argument (UndefinedArgInFrom), and the stage name expanded to
+# "/qemu:750" when it was declared after the golden stage.
+ARG REGISTRY=docker.io/qemux
+
 # The golden disk, pulled by BuildKit straight from its published image.
 #
 # 17 GiB is above what a registry accepts in one layer, so the disk is published
@@ -24,7 +29,6 @@ ARG GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
 FROM ${GOLDEN_DISK_IMAGE} AS golden
 RUN cat /data.part* > /data.qcow2
 
-ARG REGISTRY=docker.io/qemux
 FROM ${REGISTRY}/qemu:750
 
 # No proxy settings and no private mirrors: this file describes the image, not
