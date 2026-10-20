@@ -256,7 +256,18 @@ PLIST
     # desktop images use and is what actually works.
     codesign --remove-signature "$NA_BIN" 2>/dev/null || true
     for DB in "/Library/Application Support/com.apple.TCC/TCC.db"               "$WROOT/Library/Application Support/com.apple.TCC/TCC.db"; do
-      for svc in kTCCServiceScreenRecording kTCCServiceScreenCapture                  kTCCServiceAccessibility kTCCServiceListenEvent                  kTCCServicePostEvent kTCCServiceAppleEvents; do
+      # Microphone and AudioCapture are here because SYSTEM-AUDIO capture needs
+      # them even though it reads BlackHole, not a mic: the AUHAL unit is opened
+      # in duplex on the aggregate's INPUT side, and CoreAudio asks for "audio
+      # input" permission regardless of which device that is. Without these rows
+      # macOS pops a "wants to access the microphone" dialog at stream start, and
+      # a sandbox that nobody is sitting in front of waits forever — the desktop
+      # streams video and no sound, which looks like a broken audio path.
+      #
+      # The dialog is the SAME tccd decision as the others, so it is granted the
+      # same way: a path-identified row with a NULL csreq (see the note above on
+      # why a csreq makes tccd deny instead).
+      for svc in kTCCServiceScreenRecording kTCCServiceScreenCapture                  kTCCServiceAccessibility kTCCServiceListenEvent                  kTCCServicePostEvent kTCCServiceAppleEvents                  kTCCServiceMicrophone kTCCServiceAudioCapture; do
         sqlite3 "$DB" "INSERT OR REPLACE INTO access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES('$svc','$NA_BIN',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,strftime('%s','now'));" 2>/dev/null || true
       done
     done
