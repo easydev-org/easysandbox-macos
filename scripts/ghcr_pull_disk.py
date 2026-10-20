@@ -30,12 +30,12 @@ import tempfile
 import urllib.request
 
 REG = "ghcr.io"
-OWNER = "silvermelon233"
-USER = "SilverMelon233"
+OWNER = "easydev-org"
+USER = "x-access-token"
 
 PLAN = {
-    "windows": ("golden-windows", "base"),
-    "macos": ("golden-macos", "base"),
+    "windows": ("golden-disk-windows", "base"),
+    "macos": ("golden-disk-macos", "base"),
 }
 
 ctx = ssl.create_default_context()
