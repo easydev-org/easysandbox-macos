@@ -97,6 +97,10 @@ jobs:
             RELEASE_CACHEBUST=${{ github.run_id }}
             # Overridable so a test build can point at a different disk.
             GOLDEN_DISK_IMAGE=ghcr.io/easydev-org/golden-disk-macos:base
-          # gha cache with a 17 GiB disk layer would be enormous; keep it minimal.
+          # NO build cache.
+          #
+          # `cache-to: type=gha` uploaded 17 GiB to the Actions cache after every
+          # build for no benefit: the one expensive layer is the immutable disk,
+          # which BuildKit already caches from its source image. The upload
+          # roughly doubled the wall time of a build that had otherwise finished.
           cache-from: type=gha
-          cache-to: type=gha,mode=min
