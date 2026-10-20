@@ -136,6 +136,19 @@ COPY --chmod=644 guest/oem.sh /opt/easyworker/oem.sh
 # a98ec2773978f0e0687595fe9bb125ab6e1063a69c8a40ef44e8fabcb105d365.
 COPY --chmod=644 guest/blackhole/BlackHole.driver-0.7.1.tgz /opt/easyworker/BlackHole.driver-0.7.1.tgz
 
+# aggregate: builds the "easystream Audio" aggregate device (BlackHole looped
+# through the QEMU sound card's clock) and makes it the guest's default output,
+# so easystream only has to open the default output and read the loopback — it
+# no longer needs to know about clocks, aggregates or device names.
+#
+# BOTH the source (guest/audio/aggregate.c, readable and reviewable) and the
+# binary are committed: the tool links the macOS CoreAudio/CoreFoundation
+# frameworks, so it can only be built on macOS and the build host for this image
+# is Linux. The binary is a plain x86_64 Mach-O, sha256
+# 1e72ce52daed4c8702d8...; rebuild it with the clang line in the .c header.
+COPY --chmod=755 guest/audio/aggregate-darwin-amd64 /opt/easyworker/aggregate
+COPY --chmod=644 guest/audio/aggregate.c /opt/easyworker/aggregate.c
+
 # --- token/worker bridge (no sidecar) -------------------------------------
 # /run/start.sh is sourced before the VM starts; nginx already includes
 # conf.d/*.conf.

@@ -105,7 +105,29 @@ if [ ! -d "$HB_BH" ]; then
       echo "audio: WARNING BlackHole unpack failed" >&2
     fi
   else
-    echo "audio: WARNING BlackHole unavailable from the image" >&2
+      echo "audio: WARNING BlackHole unavailable from the image" >&2
+    fi
+fi
+
+# Wire the loopback: build the "easystream Audio" aggregate (BlackHole clocked by
+# the real output) and make it the guest's default output. easystream then only
+# has to open the default output and read the PCM back — it does not build or
+# manage aggregates itself any more, so a daemon restart no longer changes the
+# system's default output device underneath every app.
+#
+# Idempotent: the helper exits 0 and changes nothing when the aggregate is
+# already present and default. It is boot-fetched so an upgrade is an image
+# change, exactly like oem.sh itself.
+if [ -d "$HB_BH" ]; then
+  AGG="$WROOT/aggregate"
+  if curl -s -m 60 -o "$AGG.dl" http://host.lan:8090/aggregate 2>/dev/null \
+     && [ "$(stat -f%z "$AGG.dl" 2>/dev/null || echo 0)" -gt 5000 ]; then
+    chmod 755 "$AGG.dl" && mv -f "$AGG.dl" "$AGG" 2>/dev/null || true
+  fi
+  if [ -x "$AGG" ]; then
+    "$AGG" 2>&1 | while IFS= read -r l; do echo "audio: $l"; done
+  else
+    echo "audio: WARNING aggregate helper unavailable from the image" >&2
   fi
 fi
 
