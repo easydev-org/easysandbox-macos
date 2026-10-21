@@ -104,3 +104,30 @@ jobs:
           # which BuildKit already caches from its source image. The upload
           # roughly doubled the wall time of a build that had otherwise finished.
           cache-from: type=gha
+
+      # The disk is the whole reason this image is 14-17 GiB. Assert it is really
+      # inside, because its absence does not fail anything: the build succeeds, the
+      # push succeeds, and the image only breaks at pod start with
+      #   golden disk missing from the image: /opt/golden-disk/data.qcow2
+      #
+      # This exact failure happened once — a Containerfile lost its
+      # `COPY --from=golden` line while the step was being moved, and `latest`
+      # became a 0.33 GiB image that looked completely healthy in CI.
+      - name: assert the image contains its disk
+        run: |
+          set -euo pipefail
+          IMG="${{ env.IMAGE }}:${{ github.ref_name }}"
+          echo "checking $IMG"
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            test -s /opt/golden-disk/data.qcow2
+            sz=$(stat -c%s /opt/golden-disk/data.qcow2)
+            echo "disk: $sz bytes"
+            # A qcow2 with the guest inside is gigabytes; a few MB means the wrong
+            # file (or an empty one) was copied.
+            [ "$sz" -gt 1000000000 ] || {
+              echo "::error::disk is only $sz bytes, expected >1GB"
+              exit 1
+            }
+            qemu-img info /opt/golden-disk/data.qcow2 | head -3
+          '
