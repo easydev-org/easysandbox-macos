@@ -247,9 +247,12 @@ RUN rm -rf /usr/share/novnc /usr/share/novnc-* 2>/dev/null || true
 #
 # A bind mount is not a layer: the pieces are read during the build and only the
 # finished qcow2 is written.
-RUN --mount=type=bind,from=golden,source=/tmp/golden,target=/tmp/golden \
+# source=/ is the golden stage's ROOT — that is where the pieces live
+# (/data.part000, /data.part001, ...). Mounting it read-only means the pieces never
+# become a layer: only the joined qcow2 below is written.
+RUN --mount=type=bind,from=golden,source=/,target=/golden-ro,readonly \
     mkdir -p /opt/golden-disk \
-    && cat /tmp/golden/data.part* > /opt/golden-disk/data.qcow2 \
+    && cat /golden-ro/data.part* > /opt/golden-disk/data.qcow2 \
     && ls -l /opt/golden-disk/data.qcow2
 
 VOLUME /storage
