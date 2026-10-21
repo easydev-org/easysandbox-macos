@@ -230,6 +230,20 @@ ENV DISPLAY=none
 # noVNC is only used by the VNC display we just turned off.
 RUN rm -rf /usr/share/novnc /usr/share/novnc-* 2>/dev/null || true
 
+# --- the golden disk, LAST ON PURPOSE ---------------------------------------
+#
+# Everything above is cheap and fails fast. This step pulls the largest layer in
+# the image, so it runs only once the build has proven it can succeed.
+#
+# The pieces are joined HERE rather than in the `golden` stage: that stage is the
+# disk image itself, pure data with no /bin/sh to run `cat` with. One RUN keeps
+# the finished disk in a single layer.
+COPY --from=golden /data.part* /tmp/golden/
+RUN mkdir -p /opt/golden-disk \
+    && cat /tmp/golden/data.part* > /opt/golden-disk/data.qcow2 \
+    && rm -rf /tmp/golden \
+    && ls -l /opt/golden-disk/data.qcow2
+
 VOLUME /storage
 EXPOSE 22 48080 8090
 ENTRYPOINT ["/usr/bin/tini", "-s", "/run/entry.sh"]
