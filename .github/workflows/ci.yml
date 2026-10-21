@@ -11,7 +11,6 @@ name: ci
 #     the large-layer failures actually happened — is still exercised;
 #   * no release job: a PR must not create a GitHub Release.
 
-name: image
 
 # Build the macOS sandbox image and push it to ghcr.
 #
