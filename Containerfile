@@ -238,10 +238,18 @@ RUN rm -rf /usr/share/novnc /usr/share/novnc-* 2>/dev/null || true
 # The pieces are joined HERE rather than in the `golden` stage: that stage is the
 # disk image itself, pure data with no /bin/sh to run `cat` with. One RUN keeps
 # the finished disk in a single layer.
-COPY --from=golden /data.part* /tmp/golden/
-RUN mkdir -p /opt/golden-disk \
+# A bind mount, NOT a COPY. `COPY` would put the pieces in one layer and the
+# joined file in the next, and the `rm` cannot remove anything from an immutable
+# layer — so the image ended up carrying the disk twice:
+#
+#   layer[40] = 17.38 GiB   (the pieces, unreachable after the rm)
+#   layer[41] = 17.38 GiB   (the joined file)
+#
+# A bind mount is not a layer: the pieces are read during the build and only the
+# finished qcow2 is written.
+RUN --mount=type=bind,from=golden,source=/tmp/golden,target=/tmp/golden \
+    mkdir -p /opt/golden-disk \
     && cat /tmp/golden/data.part* > /opt/golden-disk/data.qcow2 \
-    && rm -rf /tmp/golden \
     && ls -l /opt/golden-disk/data.qcow2
 
 VOLUME /storage
