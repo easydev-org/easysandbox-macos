@@ -61,6 +61,15 @@ jobs:
       # SSD, and macOS wants tens of GiB, so the failure mode to rule out first is
       # "the container died because there was no space". The next step frees what
       # the image ships but a bake does not need.
+      # qemu-utils provides qemu-img. The extract step converts the guest disk to
+      # the qcow2 the image boots, and without this the bake reaches extraction and
+      # dies with 'qemu-img: command not found' (exit 127) - which is what the
+      # Windows bake did on its first otherwise-successful run.
+      - name: tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils
+          qemu-img --version | head -1
       - name: disk before
         run: |
           df -h / "" || true
