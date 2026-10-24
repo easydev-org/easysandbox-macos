@@ -74,8 +74,30 @@ stage_start() {
     -e "CPU_CORES=$CPUS" \
     -v "$STORAGE:/storage" \
     dockurr/macos > /dev/null
-  sleep 5
+  # Wait for the container to be genuinely up. "docker run -d" succeeding only
+  # means the container was created; if its entrypoint dies immediately - which is
+  # what an insufficient-memory or insufficient-disk check does - the container is
+  # already gone by the time the next step looks, and the wait step then sits in
+  # its heartbeat reporting nothing for an hour.
+  local i
+  for i in $(seq 1 30); do
+    if ! docker ps --format "{{.Names}}" | grep -qx "$NAME"; then
+      log "container is not running after ${i}s; its log:"
+      docker logs "$NAME" 2>&1 | tail -40 || true
+      log "docker inspect state:"
+      docker inspect -f "{{.State.Status}} exit={{.State.ExitCode}} err={{.State.Error}}" "$NAME" 2>/dev/null || true
+      return 1
+    fi
+    # Some images take a few seconds before they start logging, so require either
+    # output or a few seconds of uptime before declaring it healthy.
+    if [ -n "$(docker logs "$NAME" 2>&1 | head -1)" ] || [ "$i" -ge 10 ]; then
+      break
+    fi
+    sleep 1
+  done
   docker ps --filter "name=^$NAME$" --format "{{.Names}} {{.Status}}" || true
+  first=$(docker logs "$NAME" 2>&1 | head -3 | tr "\n" " " || true)
+  log "first container output: ${first}"
   log "start done"
 }
 
@@ -190,12 +212,21 @@ stage_extract() {
   # under a version subdirectory. Search for the largest qcow2 instead of
   # guessing the name, and require it to be bigger than a fresh sparse file.
   log "locating the disk under $STORAGE"
+  # Do not glob *.qcow2. install.sh rewrites STORAGE to $STORAGE/${VERSION,,} when
+  # the primary disk is absent, so the disk sits one level down, and the Windows
+  # bake proved the extension is not guaranteed to be .qcow2 either (its disk is
+  # data.img). Ask qemu-img what is actually a disk and take the largest one above
+  # 1 GiB; that survives both the subdirectory and a format change.
+  #
+  # Size is stat here, not du: a macOS install disk really does grow in apparent
+  # size as startosinstall writes to it, unlike the Windows sparse image whose
+  # apparent size is fixed at DISK_SIZE.
   SRC=""
   while IFS= read -r f; do
-    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
-    if [ "$sz" -gt $((1024*1024*1024)) ]; then SRC="$f"; break; fi
-  done < <(find "$STORAGE" -name "*.qcow2" -type f 2>/dev/null)
-  if [ -z "$SRC" ]; then log "no qcow2 larger than 1 GiB:"; find "$STORAGE" -maxdepth 2 -type f | head; return 1; fi
+    [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt $((1024*1024*1024)) ] || continue
+    if qemu-img info "$f" >/dev/null 2>&1; then SRC="$f"; break; fi
+  done < <(find "$STORAGE" -maxdepth 3 -type f -printf "%s %p\n" 2>/dev/null | sort -rn | cut -d" " -f2-)
+  if [ -z "$SRC" ]; then log "no disk image found under $STORAGE:"; find "$STORAGE" -maxdepth 2 -type f | head; return 1; fi
   log "using $SRC"
   ls -la "$SRC"
   qemu-img convert -O qcow2 "$SRC" "$OUT"
