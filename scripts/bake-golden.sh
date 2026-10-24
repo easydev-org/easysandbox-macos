@@ -106,17 +106,24 @@ stage_wait() {
   # impossible.
   log "waiting for bootstrap.done in the guest state share"
 
+  # The state share is INSIDE the container, not on the runner.
+  #
+  # install.sh exports QEMU_DIR/installstate over 9p, and QEMU_DIR is /run/shm
+  # (easysandbox-macos/sandbox.sh sets it, and it is the same layout the qemux
+  # base image uses for qemu.pipe and the vnc socket). So the markers live at
+  # /run/shm/installstate/bootstrap.done in the CONTAINER filesystem, which the
+  # runner cannot see directly - an earlier version looked for
+  # /run/installstate on the host and would never have found anything.
+  #
+  # Probing candidates inside the container costs one docker exec per attempt,
+  # and only until the directory appears.
   find_state() {
-    # /run/installstate is where QEMU_DIR/installstate lands for the dockur
-    # images. Fall back to a search so a base-image move does not silently
-    # degrade this into "never completes".
-    local c
-    for c in /run/installstate /var/lib/dockur/installstate; do
-      [ -d "$c" ] && { echo "$c"; return 0; }
-    done
-    c=$(docker exec "$NAME" sh -c 'ls -d /run/installstate 2>/dev/null' 2>/dev/null | tr -d '\r')
-    [ -n "$c" ] && { echo "$c"; return 0; }
-    return 1
+    docker exec "$NAME" sh -c '
+      for c in /run/shm/installstate /run/installstate /var/lib/dockur/installstate; do
+        [ -d "$c" ] && { echo "$c"; exit 0; }
+      done
+      exit 1
+    ' 2>/dev/null | tr -d "\r"
   }
 
   deadline=$(( SECONDS + WAIT ))
@@ -132,12 +139,15 @@ stage_wait() {
     fi
 
     if [ -n "$state_dir" ]; then
-      if [ -f "$state_dir/bootstrap.failed" ]; then
-        log "bootstrap FAILED (guest wrote bootstrap.failed)"
+      # Read the markers through docker exec: they are on the container side of
+      # the 9p export, not the runner side.
+      if docker exec "$NAME" sh -c "test -f $state_dir/bootstrap.failed" 2>/dev/null; then
+        log "bootstrap FAILED (guest wrote $state_dir/bootstrap.failed)"
+        docker exec "$NAME" sh -c "ls -la $state_dir" 2>/dev/null || true
         docker logs "$NAME" 2>&1 | tail -80 || true
         return 1
       fi
-      if [ -f "$state_dir/bootstrap.done" ]; then
+      if docker exec "$NAME" sh -c "test -f $state_dir/bootstrap.done" 2>/dev/null; then
         log "bootstrap.done present after ${SECONDS}s - the guest is ready"
         return 0
       fi
