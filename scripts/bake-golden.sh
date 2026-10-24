@@ -66,8 +66,24 @@ stage_prepare() {
 stage_start() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   log "starting dockur/macos"
+  # --cap-add NET_ADMIN and /dev/net/tun are NOT optional.
+  #
+  # Without them dockur cannot create its bridge and says so, loudly, in a
+  # warning most people skim:
+  #
+  #   RTNETLINK answers: Operation not permitted
+  #   Warning: failed to create bridge. Please add: --cap-add NET_ADMIN
+  #   Warning: failed to setup NAT networking, falling back to user-mode networking!
+  #
+  # It falls back to passt user-mode networking and carries on. That is fine for
+  # Windows, which installs from a local ISO, but macOS downloads the rest of its
+  # installation from Apple during the install - and the headless guest then sits
+  # at 200% CPU with data.img not growing, because it cannot reach the network.
+  # Which is exactly what happened: 33 minutes at storage_used=763MiB unchanged.
   docker run -d --name "$NAME" \
     --device=/dev/kvm \
+    --device=/dev/net/tun \
+    --cap-add NET_ADMIN \
     -e "VERSION=$VERSION" \
     -e "DISK_SIZE=$DISK_SIZE" \
     -e "RAM_SIZE=$RAM" \
