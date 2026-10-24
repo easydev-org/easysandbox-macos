@@ -1,0 +1,127 @@
+name: screenshot
+
+# Look at what the macOS guest is actually showing, without waiting for a bake.
+#
+# The bake sits in its wait step with storage_used pinned at 763 MiB, which says
+# the installer never writes - but not WHY. The serial console is useless here:
+# dockur sends qemu's output through a pipe to its own boot detector, so docker
+# logs carries only dockur's own messages. QEMU's monitor can dump the
+# framebuffer instead, which is the one view that shows whether OpenCore came up
+# and whether macOS reached its installer.
+#
+# Deliberately separate from bake-golden: this is a 3-minute diagnostic, not a
+# 40-minute install, and it must be cheap to repeat while narrowing the cause.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "macOS version for dockur (14, 15, 26 ...)"
+        required: false
+        default: "14"
+      wait:
+        description: "Seconds to let the guest run before the screenshot"
+        required: false
+        default: "180"
+      cpu_model:
+        description: "Override dockur's CPU_MODEL (blank = let dockur choose)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  shot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils
+
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h / | tail -1
+
+      - name: start container
+        run: |
+          set -eux
+          # Same flags as the bake, including the ones that were needed to get a
+          # real NAT bridge instead of passt.
+          docker run -d --name macshot \
+            --device=/dev/kvm \
+            --device=/dev/net/tun \
+            --cap-add NET_ADMIN \
+            -e "VERSION=$VERSION" \
+            -e "DISK_SIZE=64G" \
+            -e "RAM_SIZE=8G" \
+            -e "CPU_MODEL=${{ github.event.inputs.cpu_model }}" \
+            -v "$GITHUB_WORKSPACE/storage:/storage" \
+            dockurr/macos
+          sleep 10
+          docker ps --filter name=macshot
+          docker logs --tail 40 macshot || true
+
+      - name: let it run, then screendump
+        run: |
+          set -x
+          sleep "${{ github.event.inputs.wait }}"
+
+          # QEMU's monitor is a unix socket inside the container. screendump
+          # writes the current framebuffer as a PPM, which is the only signal
+          # that shows the guest's own screen.
+          # The dockur image is Debian based but minimal: check what it actually
+          # has first, so a missing socat is a fact in the log rather than a
+          # silent no-op. python3 is used when present because it needs no
+          # package and can speak the unix socket directly.
+          docker exec macshot sh -c 'command -v socat; command -v nc; command -v python3; ls -la /run/shm/ | head' || true
+          docker cp scripts/shotsock.py macshot:/tmp/shotsock.py || true
+          docker exec macshot python3 /tmp/shotsock.py /run/shm/monitor.sock /tmp/shot.ppm || true
+          docker exec macshot ls -la /tmp/shot.ppm || echo NO_SHOT
+          docker cp macshot:/tmp/shot.ppm ./screen.ppm 2>/dev/null || echo "cp failed"
+          ls -la screen.ppm 2>/dev/null || true
+
+      - name: convert
+        run: |
+          set -x
+          if [ -s screen.ppm ]; then
+            python3 scripts/ppm2png.py screen.ppm screen.png || true
+          else
+            echo "no framebuffer captured"
+          fi
+
+      # What the guest says about itself, independent of the picture.
+      - name: guest state
+        if: always()
+        run: |
+          set -x
+          docker logs --tail 120 macshot 2>&1 || true
+          echo "=== storage ==="
+          sudo ls -la "$GITHUB_WORKSPACE/storage" 2>/dev/null || true
+          sudo du -sh "$GITHUB_WORKSPACE/storage" 2>/dev/null || true
+          sudo find "$GITHUB_WORKSPACE/storage" -maxdepth 3 -printf "%10s %p\n" 2>/dev/null | sort -rn | head -10 || true
+          echo "=== qemu cmdline ==="
+          docker exec macshot sh -c 'tr "\0" " " < /proc/$(cat /run/shm/qemu.pid 2>/dev/null || echo 1)/cmdline 2>/dev/null | tr " " "\n" | grep -E "^-cpu|^-m |^-smp" ' || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-screen
+          path: |
+            screen.png
+            screen.ppm
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: stop
+        if: always()
+        run: docker rm -f macshot || true
