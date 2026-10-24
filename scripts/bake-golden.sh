@@ -80,33 +80,86 @@ stage_start() {
 }
 
 stage_wait() {
-  # macOS has NO host-visible completion marker. Its progress lives inside the
-  # guest at /Volumes/installstate/bootstrap.done, which the host cannot see, so
-#"  the signal has to come from the container log. That line is emitted by
-  # install/recovery/launch.sh right after the unattended bootstrap is in place.
-  log "waiting for 'unattended bootstrap installed successfully'"
+  # Completion is NOT a log line.
+  #
+  # install/recovery/launch.sh:204 prints "unattended bootstrap installed
+  # successfully" and that is the moment the bootstrap HELPER is ready - the real
+  # startosinstall only starts ~140 lines later (line 344), and after it finishes
+  # the guest sits in "while :; do sleep 60; done" waiting for a reboot. Treating
+  # that early message as done stops the container mid-install and yields a
+  # half-written disk.
+  #
+  # The real signals are two marker files the guest writes into its state share:
+  #
+  #   bootstrap.done    the helper finished installing Setup Assistant + account
+  #   bootstrap.failed  it did not
+  #
+  # That share is a 9p export of QEMU_DIR/installstate (install.sh:403,431), so
+  # the markers appear on the HOST - the earlier comment claiming otherwise was
+  # wrong, and it is why this step was checking the wrong thing.
+  #
+  # QEMU_DIR is in the qemux/qemu base image and is /run there (the image COPYs
+  # its scripts to /run and runs /run/entry.sh from it). Rather than trust that
+  # guess, locate the directory at run time: it is the one holding bootstrap.ready
+  # or the exit markers. install.sh rm -rf's it on every container start, so it
+  # only exists while an install is in flight, which also makes a stale marker
+  # impossible.
+  log "waiting for bootstrap.done in the guest state share"
+
+  find_state() {
+    # /run/installstate is where QEMU_DIR/installstate lands for the dockur
+    # images. Fall back to a search so a base-image move does not silently
+    # degrade this into "never completes".
+    local c
+    for c in /run/installstate /var/lib/dockur/installstate; do
+      [ -d "$c" ] && { echo "$c"; return 0; }
+    done
+    c=$(docker exec "$NAME" sh -c 'ls -d /run/installstate 2>/dev/null' 2>/dev/null | tr -d '\r')
+    [ -n "$c" ] && { echo "$c"; return 0; }
+    return 1
+  }
+
   deadline=$(( SECONDS + WAIT ))
   last_beat=0
+  state_dir=""
   while (( SECONDS < deadline )); do
-    if docker logs "$NAME" 2>&1 | grep -q "unattended bootstrap installed successfully"; then
-      log "installer reported success after ${SECONDS}s"; return 0
+    [ -z "$state_dir" ] && state_dir=$(find_state || true)
+
+    if [ -n "$state_dir" ]; then
+      if [ -f "$state_dir/bootstrap.failed" ]; then
+        log "bootstrap FAILED (guest wrote bootstrap.failed)"
+        docker logs "$NAME" 2>&1 | tail -80 || true
+        return 1
+      fi
+      if [ -f "$state_dir/bootstrap.done" ]; then
+        log "bootstrap.done present after ${SECONDS}s - the guest is ready"
+        return 0
+      fi
     fi
+
     if ! docker ps --format "{{.Names}}" | grep -qx "$NAME"; then
-      log "container exited before reporting success; tail:"
-      docker logs "$NAME" 2>&1 | tail -60 || true
+      log "container exited before bootstrap.done; tail:"
+      docker logs "$NAME" 2>&1 | tail -80 || true
       return 1
     fi
+
+    # Heartbeat. The disk size is the health signal a host can see: startosinstall
+    # writes as it prepares, so a size stuck for many minutes is the one way to
+    # tell "still working" from "hung". Report the stage we are in too, because
+    # the two markers above only exist near the end.
     if (( SECONDS - last_beat >= 30 )); then
       last_beat=$SECONDS
       disk=$(find "$STORAGE" -name "*.qcow2" -type f -printf "%s\n" 2>/dev/null | sort -n | tail -1)
       : "${disk:=0}"
-      tail_line=$(docker logs --tail 1 "$NAME" 2>&1 | tr -d "\r" | cut -c1-100 || true)
-      log "${SECONDS}s  disk=$((disk/1048576))MiB  guest: $tail_line"
+      phase=$(docker logs "$NAME" 2>&1 | grep -oE "installation state share mounted|unattended bootstrap preflight passed|selected /dev/[a-z0-9]+|starting online macOS installation|bootstrap installation succeeded" | tail -1)
+      log "${SECONDS}s  disk=$((disk/1048576))MiB  state=${state_dir:-not-yet}  phase=${phase:-early}"
     fi
     sleep 30
   done
-  log "TIMEOUT after ${WAIT}s; tail:"
-  docker logs "$NAME" 2>&1 | tail -60 || true
+
+  log "TIMEOUT after ${WAIT}s"
+  [ -n "$state_dir" ] && ls -la "$state_dir" || true
+  docker logs "$NAME" 2>&1 | tail -80 || true
   return 1
 }
 
