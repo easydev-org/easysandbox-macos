@@ -191,13 +191,18 @@ stage_wait() {
     # the two markers above only exist near the end.
     if (( SECONDS - last_beat >= 30 )); then
       last_beat=$SECONDS
-      disk=$(find "$STORAGE" -name "*.qcow2" -type f -printf "%s\n" 2>/dev/null | sort -n | tail -1 || true)
-      : "${disk:=0}"
+      # du over the whole tree, not a *.qcow2 glob with stat:
+      #   * the extension is not guaranteed (the Windows bake writes data.img),
+      #   * and stat on a sparse qcow2 reports the full DISK_SIZE from creation, so
+      #     it never moves. This is the same pair of mistakes the Windows heartbeat
+      #     made, and it is why macOS read disk=0MiB for 25 minutes.
+      used=$(du -sm "$STORAGE" 2>/dev/null | cut -f1 || true)
+      : "${used:=0}"
       # grep exits 1 when nothing matches, and under set -e a failing command
       # substitution aborts the script - so "no phase yet" would be fatal. Every
       # probe here is allowed to come back empty.
       phase=$(docker logs "$NAME" 2>&1 | grep -oE "installation state share mounted|unattended bootstrap preflight passed|selected /dev/[a-z0-9]+|starting online macOS installation|bootstrap installation succeeded" | tail -1 || true)
-      log "${SECONDS}s  disk=$((disk/1048576))MiB  state=${state_dir:-not-yet}  phase=${phase:-early}"
+      log "${SECONDS}s  storage_used=${used}MiB  state=${state_dir:-not-yet}  phase=${phase:-early}"
     fi
     sleep 30
   done
@@ -212,34 +217,31 @@ stage_extract() {
   log "stopping the guest"
   docker stop -t 240 "$NAME" >/dev/null 2>&1 || true
 
-  # Pull the disk out with docker cp, not by searching the host mount.
+  # The disk is in the bind mount, not hidden in the container: install.sh writes
+  # it under \$STORAGE/\${VERSION} and the Windows bake showed the same layout with
+  # /storage/data.img visible from the host. So convert it in place - no docker cp.
   #
-  # docker exec is useless here: this stage stops the container first (it has to,
-  # so the disk is consistent) and exec needs a running one. cp works on a stopped
-  # container. And the name is not guessable - macOS rewrites STORAGE to
-  # $STORAGE/${VERSION,,} when the primary disk is absent, and the Windows bake
-  # showed the extension is not necessarily .qcow2 (its disk is data.img).
+  # docker cp was tried and is strictly worse: it does not preserve holes, so a
+  # sparse 64 GiB image becomes 64 GiB of real I/O on the runner.
   #
-  # So stage_wait recorded the exact path with find, while the container was still
-  # running, in $STORAGE/.disk-path.
+  # The filename is still not worth guessing at, so stage_wait recorded the exact
+  # path with find while the container was running (docker exec cannot inspect a
+  # stopped one), and this reads it back.
   SRC=""
-  inner=$(head -1 "$STORAGE/.disk-path" 2>/dev/null || true)
-  if [ -n "$inner" ]; then
-    log "copying $inner out of the container"
-    if docker cp "$NAME:$inner" "$STORAGE/from-container.img" >/dev/null 2>&1; then
-      SRC="$STORAGE/from-container.img"
-    else
-      log "docker cp failed for $inner"
-    fi
-  else
-    log "no disk path recorded by the wait stage"
+  recorded=$(head -1 "$STORAGE/.disk-path" 2>/dev/null || true)
+  if [ -n "$recorded" ]; then
+    cand="$STORAGE/$(basename "$recorded")"
+    # macOS puts the disk one level down, so also try the version subdirectory.
+    for c in "$cand" "$STORAGE/${VERSION}/$(basename "$recorded")"; do
+      [ -f "$c" ] && { SRC="$c"; break; }
+    done
   fi
 
-  # Last resort: sweep the host mount, skipping ISOs because qemu-img reads them
-  # happily and would otherwise be picked as "a disk".
+  # Fall back to a sweep. qemu-img decides what is a disk, ISOs are skipped
+  # because qemu-img reads them happily and would otherwise be chosen.
   if [ -z "$SRC" ]; then
     while IFS= read -r f; do
-      case "$f" in *.iso) continue ;; esac
+      case "$f" in *.iso|*.dmg) continue ;; esac
       if qemu-img info "$f" >/dev/null 2>&1; then SRC="$f"; break; fi
     done < <(find "$STORAGE" -type f -size +1G -printf "%s %p\n" 2>/dev/null | sort -rn | cut -d" " -f2-)
   fi
@@ -250,10 +252,16 @@ stage_extract() {
     return 1
   fi
 
-  log "using $SRC"
+  log "converting $SRC"
   ls -la "$SRC"
-  qemu-img convert -O qcow2 "$SRC" "$OUT"
-  qemu-img info "$OUT" | head -6
+  # -c compresses the stored clusters; read cost is one decompression per cluster,
+  # acceptable for an image that becomes an overlay backing file. The macOS disk
+  # is genuinely large (tens of GiB written), so this is where it matters most.
+  qemu-img convert -O qcow2 -c "$SRC" "$OUT"
+  log "converted: $(ls -la "$OUT")"
+  qemu-img info "$OUT" | head -8
+  du -h --apparent-size "$OUT" 2>/dev/null || ls -la "$OUT"
+  du -h "$OUT" 2>/dev/null || true
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   log "BAKED macos $VERSION ($ARCH) -> $OUT"
 }

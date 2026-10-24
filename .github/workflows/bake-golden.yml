@@ -91,6 +91,18 @@ jobs:
         run: sudo -E bash scripts/bake-golden.sh prepare
       - name: bake start container
         run: sudo -E bash scripts/bake-golden.sh start
+      # The container prints its banner and then nothing, so the wait loop has no
+      # signal at all. Snapshot what is happening inside it right away: whether
+      # qemu is running, what /storage contains, and whether the state share exists.
+      - name: bake probe container
+        run: |
+          set -x
+          # Give it long enough to get past the banner and into the recovery
+          # download, which is the first thing macOS does.
+          sleep 60
+          sudo docker ps -a
+          sudo docker exec macbake sh -c 'ps aux | head -20; echo ---; ls -la /storage; echo ---; ls -la /run/shm 2>/dev/null; echo ---; cat /sys/module/kvm_amd/parameters/nested 2>/dev/null' || true
+          sudo docker logs --tail 60 macbake || true
       - name: bake wait for install
         run: sudo -E bash scripts/bake-golden.sh wait
       - name: bake extract disk
