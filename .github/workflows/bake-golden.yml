@@ -32,9 +32,14 @@ on:
         required: false
         default: "14"
       disk_size:
-        description: "qcow2 capacity passed to dockur"
+        # A GitHub runner has roughly 14 GB free in $GITHUB_WORKSPACE and a macOS
+        # install needs tens of GiB, so the default is deliberately the smallest
+        # that still fits macOS plus some headroom. Raise it only on a runner with
+        # more disk (or a self-hosted one) - the first attempt used 96G and the
+        # container died without a word.
+        description: "qcow2 capacity passed to dockur (runner disk is ~14 GB)"
         required: false
-        default: "96G"
+        default: "64G"
 
 permissions:
   contents: read
@@ -51,6 +56,26 @@ jobs:
       OUT: ${{ github.workspace }}/out/macos.qcow2
     steps:
       - uses: actions/checkout@v4
+
+      # Report the disk before anything else. A GitHub runner has only ~14 GB of
+      # SSD, and macOS wants tens of GiB, so the failure mode to rule out first is
+      # "the container died because there was no space". The next step frees what
+      # the image ships but a bake does not need.
+      - name: disk before
+        run: |
+          df -h / "" || true
+
+      # The runner image carries ~20 GB of toolchains a macOS bake never touches
+      # (Android SDK, .NET, Haskell, CodeQL caches, the bundled Docker images).
+      # Removing them is the difference between "no space" and "fits".
+      - name: free disk space
+        run: |
+          set -x
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          sudo apt-get clean || true
+          df -h / "" || true
       # Fails in seconds on an unsupported host or arch, instead of after the
       # image download.
       - name: bake prepare
