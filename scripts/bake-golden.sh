@@ -171,6 +171,10 @@ stage_wait() {
       fi
       if docker exec "$NAME" sh -c "test -f $state_dir/bootstrap.done" 2>/dev/null; then
         log "bootstrap.done present after ${SECONDS}s - the guest is ready"
+        # Record where the disk is WHILE the container still runs: docker exec
+        # cannot inspect a stopped container, and extract runs after the stop.
+        docker exec "$NAME" find /storage -maxdepth 2 -type f -size +1G \( -name "*.img" -o -name "*.qcow2" \) 2>/dev/null | tr -d "\r" > "$STORAGE/.disk-path" || true
+        log "recorded disk path: $(head -1 "$STORAGE/.disk-path" 2>/dev/null)"
         return 0
       fi
     fi
@@ -207,26 +211,45 @@ stage_wait() {
 stage_extract() {
   log "stopping the guest"
   docker stop -t 240 "$NAME" >/dev/null 2>&1 || true
-  # The disk is NOT at /storage/data.qcow2: install.sh rewrites
-  # STORAGE="$STORAGE/${VERSION,,}" when the primary disk is absent, so it lands
-  # under a version subdirectory. Search for the largest qcow2 instead of
-  # guessing the name, and require it to be bigger than a fresh sparse file.
-  log "locating the disk under $STORAGE"
-  # Do not glob *.qcow2. install.sh rewrites STORAGE to $STORAGE/${VERSION,,} when
-  # the primary disk is absent, so the disk sits one level down, and the Windows
-  # bake proved the extension is not guaranteed to be .qcow2 either (its disk is
-  # data.img). Ask qemu-img what is actually a disk and take the largest one above
-  # 1 GiB; that survives both the subdirectory and a format change.
+
+  # Pull the disk out with docker cp, not by searching the host mount.
   #
-  # Size is stat here, not du: a macOS install disk really does grow in apparent
-  # size as startosinstall writes to it, unlike the Windows sparse image whose
-  # apparent size is fixed at DISK_SIZE.
+  # docker exec is useless here: this stage stops the container first (it has to,
+  # so the disk is consistent) and exec needs a running one. cp works on a stopped
+  # container. And the name is not guessable - macOS rewrites STORAGE to
+  # $STORAGE/${VERSION,,} when the primary disk is absent, and the Windows bake
+  # showed the extension is not necessarily .qcow2 (its disk is data.img).
+  #
+  # So stage_wait recorded the exact path with find, while the container was still
+  # running, in $STORAGE/.disk-path.
   SRC=""
-  while IFS= read -r f; do
-    [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt $((1024*1024*1024)) ] || continue
-    if qemu-img info "$f" >/dev/null 2>&1; then SRC="$f"; break; fi
-  done < <(find "$STORAGE" -maxdepth 3 -type f -printf "%s %p\n" 2>/dev/null | sort -rn | cut -d" " -f2-)
-  if [ -z "$SRC" ]; then log "no disk image found under $STORAGE:"; find "$STORAGE" -maxdepth 2 -type f | head; return 1; fi
+  inner=$(head -1 "$STORAGE/.disk-path" 2>/dev/null || true)
+  if [ -n "$inner" ]; then
+    log "copying $inner out of the container"
+    if docker cp "$NAME:$inner" "$STORAGE/from-container.img" >/dev/null 2>&1; then
+      SRC="$STORAGE/from-container.img"
+    else
+      log "docker cp failed for $inner"
+    fi
+  else
+    log "no disk path recorded by the wait stage"
+  fi
+
+  # Last resort: sweep the host mount, skipping ISOs because qemu-img reads them
+  # happily and would otherwise be picked as "a disk".
+  if [ -z "$SRC" ]; then
+    while IFS= read -r f; do
+      case "$f" in *.iso) continue ;; esac
+      if qemu-img info "$f" >/dev/null 2>&1; then SRC="$f"; break; fi
+    done < <(find "$STORAGE" -type f -size +1G -printf "%s %p\n" 2>/dev/null | sort -rn | cut -d" " -f2-)
+  fi
+
+  if [ -z "$SRC" ]; then
+    log "no disk found; storage tree:"
+    find "$STORAGE" -maxdepth 3 -printf "%10s %p\n" 2>/dev/null | sort -rn | head -20 || true
+    return 1
+  fi
+
   log "using $SRC"
   ls -la "$SRC"
   qemu-img convert -O qcow2 "$SRC" "$OUT"
