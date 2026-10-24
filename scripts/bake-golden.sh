@@ -123,7 +123,13 @@ stage_wait() {
   last_beat=0
   state_dir=""
   while (( SECONDS < deadline )); do
-    [ -z "$state_dir" ] && state_dir=$(find_state || true)
+    # Note the explicit if: "X && Y" returns 1 when X is false, and with
+    # set -e that kills the script on the second iteration when state_dir is
+    # already set. The first version died exactly 30s in, which is one
+    # heartbeat, for this reason.
+    if [ -z "$state_dir" ]; then
+      state_dir=$(find_state || true)
+    fi
 
     if [ -n "$state_dir" ]; then
       if [ -f "$state_dir/bootstrap.failed" ]; then
@@ -149,9 +155,12 @@ stage_wait() {
     # the two markers above only exist near the end.
     if (( SECONDS - last_beat >= 30 )); then
       last_beat=$SECONDS
-      disk=$(find "$STORAGE" -name "*.qcow2" -type f -printf "%s\n" 2>/dev/null | sort -n | tail -1)
+      disk=$(find "$STORAGE" -name "*.qcow2" -type f -printf "%s\n" 2>/dev/null | sort -n | tail -1 || true)
       : "${disk:=0}"
-      phase=$(docker logs "$NAME" 2>&1 | grep -oE "installation state share mounted|unattended bootstrap preflight passed|selected /dev/[a-z0-9]+|starting online macOS installation|bootstrap installation succeeded" | tail -1)
+      # grep exits 1 when nothing matches, and under set -e a failing command
+      # substitution aborts the script - so "no phase yet" would be fatal. Every
+      # probe here is allowed to come back empty.
+      phase=$(docker logs "$NAME" 2>&1 | grep -oE "installation state share mounted|unattended bootstrap preflight passed|selected /dev/[a-z0-9]+|starting online macOS installation|bootstrap installation succeeded" | tail -1 || true)
       log "${SECONDS}s  disk=$((disk/1048576))MiB  state=${state_dir:-not-yet}  phase=${phase:-early}"
     fi
     sleep 30
