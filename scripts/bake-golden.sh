@@ -85,6 +85,20 @@ stage_start() {
     --device=/dev/net/tun \
     --cap-add NET_ADMIN \
     -e "VERSION=$VERSION" \
+    # MANUAL=N is what makes the install unattended, and it is NOT the default.
+    #
+    # install.sh:14 does  : "${MANUAL:="Y"}"  and then
+    #   if enabled "$MANUAL"; then mv recovery.dmg ... else prepareAutomatedRecovery
+    # so the out-of-the-box behaviour is the manual one the README describes:
+    # boot to Recovery, pick Disk Utility, erase, click Reinstall macOS.
+    #
+    # That is exactly what the screenshot showed - a fully rendered Recovery
+    # window offering 'Reinstall macOS Sonoma' and waiting for a click - while
+    # data.img never grew and storage_used sat at 763 MiB for 33 minutes.
+    # enabled() treats y|yes|true|1|on|enable|enabled as true, so N takes the
+    # other branch, which patches OpenCore's rc.cdrom.sh to run launch.sh and
+    # drive startosinstall by itself.
+    -e "MANUAL=N" \
     -e "DISK_SIZE=$DISK_SIZE" \
     -e "RAM_SIZE=$RAM" \
     -e "CPU_CORES=$CPUS" \
