@@ -80,11 +80,6 @@ stage_start() {
   # installation from Apple during the install - and the headless guest then sits
   # at 200% CPU with data.img not growing, because it cannot reach the network.
   # Which is exactly what happened: 33 minutes at storage_used=763MiB unchanged.
-  docker run -d --name "$NAME" \
-    --device=/dev/kvm \
-    --device=/dev/net/tun \
-    --cap-add NET_ADMIN \
-    -e "VERSION=$VERSION" \
     # MANUAL=N is what makes the install unattended, and it is NOT the default.
     #
     # install.sh:14 does  : "${MANUAL:="Y"}"  and then
@@ -98,6 +93,11 @@ stage_start() {
     # enabled() treats y|yes|true|1|on|enable|enabled as true, so N takes the
     # other branch, which patches OpenCore's rc.cdrom.sh to run launch.sh and
     # drive startosinstall by itself.
+  docker run -d --name "$NAME" \
+    --device=/dev/kvm \
+    --device=/dev/net/tun \
+    --cap-add NET_ADMIN \
+    -e "VERSION=$VERSION" \
     -e "MANUAL=N" \
     -e "DISK_SIZE=$DISK_SIZE" \
     -e "RAM_SIZE=$RAM" \
