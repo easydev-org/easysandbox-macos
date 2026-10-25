@@ -1,0 +1,79 @@
+name: probe-image
+
+# What does the published dockur/macos image actually contain?
+#
+# This matters because everything read out of the upstream git tree has been
+# misleading: master has src/image.sh with prepareAutomatedRecovery (the
+# unattended path), while the running image reported
+#   grep: /run/image.sh: No such file or directory
+# so the shipped build and the source tree disagree. Every hypothesis built on
+# the master source - MANUAL's branch, the boot marker, the state share - was
+# tested against a container that does not contain that code.
+#
+# So stop reading source and inspect the artefact: list /run, grep the scripts
+# that are there, and print the version the image reports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image reference to inspect"
+        required: false
+        default: "dockurr/macos:latest"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: pull
+        run: |
+          set -eux
+          docker pull "${{ github.event.inputs.image }}"
+          docker image inspect "${{ github.event.inputs.image }}" \
+            --format '{{json .Config.Env}}' | tr ',' '\n' | head -30
+          echo "=== image version label ==="
+          docker image inspect "${{ github.event.inputs.image }}" \
+            --format '{{json .Config.Labels}}' || true
+
+      # /run is where the entrypoint scripts live. entry.sh sources them, so
+      # whatever is missing here cannot be part of any code path.
+      - name: what is in /run
+        run: |
+          set -eux
+          docker run --rm --entrypoint sh "${{ github.event.inputs.image }}" \
+            -c 'ls -la /run; echo "=== /etc/version ==="; cat /etc/version 2>/dev/null || echo none'
+
+      - name: does the unattended path exist in the image
+        run: |
+          set -eux
+          # Three markers of the unattended implementation:
+          #   image.sh / prepareAutomatedRecovery / patchRecoveryBootstrap
+          # Absence of all three means the image only supports manual install.
+          docker run --rm --entrypoint sh "${{ github.event.inputs.image }}" -c '
+            echo "--- files ---"
+            ls -1 /run/*.sh 2>/dev/null
+            echo "--- grep prepareAutomatedRecovery ---"
+            grep -l "prepareAutomatedRecovery" /run/*.sh 2>/dev/null || echo "ABSENT"
+            echo "--- grep Preparing automated ---"
+            grep -l "Preparing automated" /run/*.sh 2>/dev/null || echo "ABSENT"
+            echo "--- grep patchRecoveryBootstrap ---"
+            grep -l "patchRecoveryBootstrap" /run/*.sh 2>/dev/null || echo "ABSENT"
+            echo "--- MANUAL default in install.sh ---"
+            grep -n "MANUAL" /run/install.sh 2>/dev/null | head -5 || echo "no install.sh"
+          '
+
+      # The same probe against master, so the difference is visible side by side.
+      - name: compare with the upstream source tree
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/dockur/macos upstream
+          echo "=== upstream master src ==="
+          ls -1 upstream/src/
+          echo "=== master has prepareAutomatedRecovery? ==="
+          grep -l "prepareAutomatedRecovery" upstream/src/*.sh 2>/dev/null || echo ABSENT
+          echo "=== master tags nearby ==="
+          git -C upstream tag --list | tail -5 || true
