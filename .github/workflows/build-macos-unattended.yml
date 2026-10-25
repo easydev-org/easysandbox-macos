@@ -1,0 +1,206 @@
+name: build-macos-unattended
+
+# Build dockur/macos from its master branch and check whether it can install
+# macOS without a human.
+#
+# WHY. The published image is v3.12 (revision 20b05f72, built 2026-08-19) and its
+# /run has no image.sh at all:
+#   prepareAutomatedRecovery -> ABSENT, patchRecoveryBootstrap -> ABSENT
+# and its install.sh (471 lines) contains no MANUAL, no rc.cdrom, no
+# installstate, no startosinstall. So the image can only install by hand - which
+# is exactly the Recovery screen the screenshot showed, waiting for a click.
+#
+# master does have src/image.sh and src/install/ with those paths, so the code
+# exists upstream but has never been released. Note the author labels it
+# "the unattended-install proof" in a comment, so it may well be unfinished -
+# which is what this workflow is for: find out from the artefact, not the source.
+#
+# Everything here runs in CI. Nothing is built or probed from a laptop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "dockur/macos git ref to build (blank = default branch)"
+        required: false
+        default: ""
+      run_bake:
+        description: "Also attempt a full macOS bake with the built image"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+    steps:
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h / | tail -1
+
+      - name: fetch dockur/macos source
+        run: |
+          set -eux
+          ref="${{ github.event.inputs.ref }}"
+          git clone --depth 1 ${ref:+-b "$ref"} https://github.com/dockur/macos src
+          git -C src log --oneline -3
+          echo "=== src tree ==="
+          ls -1 src/src/
+
+      # Confirm the code we are about to run actually contains the unattended
+      # path, before spending time on a build.
+      - name: does this ref have the unattended path
+        run: |
+          set -eux
+          grep -l "prepareAutomatedRecovery" src/src/*.sh || echo "ABSENT: prepareAutomatedRecovery"
+          grep -l "patchRecoveryBootstrap"    src/src/*.sh || echo "ABSENT: patchRecoveryBootstrap"
+          ls -la src/src/image.sh src/src/install/ 2>/dev/null || echo "no image.sh / install dir"
+
+      - name: build the image
+        id: tag
+        run: |
+          set -eux
+          img="dockur-macos-unattended:${{ github.run_number }}"
+          docker build -t "$img" src
+          docker image inspect "$img" --format '{{json .Config.Labels}}'
+          echo "image=$img" >> "$GITHUB_OUTPUT"
+
+      # Same probe as probe-image.yml, against the freshly built image. This is
+      # the comparison that matters: if the markers are still absent here, the
+      # build did not pick the code up and running a bake would be pointless.
+      - name: what the built image contains
+        run: |
+          set -eux
+          img="${{ steps.tag.outputs.image }}"
+          docker run --rm --entrypoint sh "$img" -c '
+            echo "--- /run ---"; ls -1 /run/*.sh 2>/dev/null | xargs -n1 basename
+            echo "--- prepareAutomatedRecovery ---"; grep -l prepareAutomatedRecovery /run/*.sh 2>/dev/null || echo ABSENT
+            echo "--- patchRecoveryBootstrap ---";    grep -l patchRecoveryBootstrap    /run/*.sh 2>/dev/null || echo ABSENT
+            echo "--- Preparing automated ---";       grep -l "Preparing automated"      /run/*.sh 2>/dev/null || echo ABSENT
+            echo "--- MANUAL default ---";            grep -n "MANUAL" /run/install.sh 2>/dev/null | head -3 || echo "no install.sh"
+            echo "--- version ---";                   cat /etc/version 2>/dev/null || echo none
+          '
+
+      # Keep the image for the bake job. Actions cannot pass an image between
+      # jobs by reference, so export it as a tarball artifact (docker load on the
+      # other side). Only done when the bake was requested.
+      - name: export image for the bake job
+        if: github.event.inputs.run_bake == 'true'
+        run: |
+          set -eux
+          docker save "${{ steps.tag.outputs.image }}" -o /tmp/image.tar
+          ls -la /tmp/image.tar
+
+      - uses: actions/upload-artifact@v4
+        if: github.event.inputs.run_bake == 'true'
+        with:
+          name: macos-image
+          path: /tmp/image.tar
+          retention-days: 2
+          compression-level: 0
+
+  bake:
+    needs: build
+    if: github.event.inputs.run_bake == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils
+
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h / | tail -1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-image
+          path: /tmp/img
+
+      - name: load image
+        run: |
+          set -eux
+          docker load -i /tmp/img/image.tar
+          docker images
+
+      - name: start the container
+        run: |
+          set -eux
+          mkdir -p "$GITHUB_WORKSPACE/storage"
+          docker run -d --name macbake \
+            --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
+            -e "VERSION=14" \
+            -e "DISK_SIZE=64G" \
+            -e "RAM_SIZE=8G" \
+            -e "CPU_CORES=4" \
+            -v "$GITHUB_WORKSPACE/storage:/storage" \
+            "${{ needs.build.outputs.image }}"
+          sleep 30
+          docker ps -a
+          docker logs --tail 40 macbake || true
+
+      # The single question: does anything land on the disk before a human
+      # clicks? storage_used is du over the whole mount, so it counts base.dmg,
+      # boot.img and data.img together - a jump past ~800 MiB means the installer
+      # started writing.
+      - name: does it install by itself
+        run: |
+          set -eux
+          for i in $(seq 1 40); do
+            sleep 30
+            used=$(du -sm "$GITHUB_WORKSPACE/storage" | cut -f1)
+            echo "[$((i*30))s] storage_used=${used}MiB"
+            if [ "$used" -gt 2000 ]; then
+              echo "INSTALLER IS WRITING (${used}MiB)"
+              break
+            fi
+            if ! docker ps --format '{{.Names}}' | grep -qx macbake; then
+              echo "container exited"; docker logs --tail 80 macbake || true; break
+            fi
+          done
+          echo "=== greps for the unattended markers in the live container ==="
+          docker logs macbake 2>&1 | grep -Ei "preparing automated|patched launch|startosinstall|bootstrap" | head -20 || echo "none"
+          echo "=== storage ==="
+          find "$GITHUB_WORKSPACE/storage" -maxdepth 3 -printf "%10s %p\n" 2>/dev/null | sort -rn | head -10 || true
+
+      # Screenshot regardless: if it did not install, the picture says whether it
+      # is sitting in Recovery (no unattended code) or somewhere else.
+      - name: screenshot
+        if: always()
+        run: |
+          set -x
+          docker cp scripts/shotsock.py macbake:/tmp/shotsock.py || true
+          docker exec macbake python3 /tmp/shotsock.py /run/shm/monitor.sock /tmp/shot.ppm || true
+          docker cp macbake:/tmp/shot.ppm ./screen.ppm || true
+          if [ -s screen.ppm ]; then python3 scripts/ppm2png.py screen.ppm screen.png || true; fi
+          ls -la screen.* 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-unattended-result
+          path: |
+            screen.png
+            screen.ppm
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: stop
+        if: always()
+        run: docker rm -f macbake || true
