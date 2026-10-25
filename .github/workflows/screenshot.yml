@@ -63,8 +63,20 @@ jobs:
           sleep 20
           echo "=== env the container actually has ==="
           docker exec envtest env | grep -Ei "manual|version|disk_size|ram" || true
-          echo "=== what install.sh would decide ==="
-          docker exec envtest sh -c 'v=$(printf "%s" "$MANUAL" | tr -d " ""); case "${v,,}" in y|yes|true|1|on|enable|enabled) echo "MANUAL=$MANUAL -> enabled -> MANUAL INSTALL";; *) echo "MANUAL=$MANUAL -> not enabled -> AUTOMATED";; esac' || true
+          echo "=== what install.sh itself decides ==="
+          # Source the real enabled() from the image, do not reimplement it.
+          docker exec envtest bash -c '
+            . /run/utils.sh 2>/dev/null || . /run/sysutils.sh 2>/dev/null || true
+            if declare -f enabled >/dev/null; then
+              if enabled "$MANUAL"; then echo "RESULT: enabled(MANUAL) true -> MANUAL INSTALL"
+              else echo "RESULT: enabled(MANUAL) false -> AUTOMATED (prepareAutomatedRecovery)"; fi
+            else
+              echo "RESULT: could not source enabled(); files:"; ls /run/*.sh | head
+            fi
+          ' || true
+          echo "=== does the automated path exist? ==="
+          docker exec envtest grep -n "Preparing automated" /run/image.sh || echo "image.sh not in /run"
+          docker exec envtest ls -la /run/image.sh 2>/dev/null || true
           docker rm -f envtest || true
 
       - name: start container
