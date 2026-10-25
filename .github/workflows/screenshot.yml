@@ -52,6 +52,21 @@ jobs:
           sudo docker image prune -af || true
           df -h / | tail -1
 
+      - name: prove the env reached the container
+        run: |
+          set -eux
+          # The bake never printed 'Preparing automated installation', which only
+          # happens off the MANUAL!=true branch. That means the variable the
+          # container saw was still the default, so check it directly instead of
+          # reasoning about docker run argument order again.
+          docker run -d --name envtest             --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN             -e "VERSION=14"             -e "MANUAL=N"             -e "DISK_SIZE=64G"             -e "RAM_SIZE=8G"             -v "/storage:/storage"             dockurr/macos || true
+          sleep 20
+          echo "=== env the container actually has ==="
+          docker exec envtest env | grep -Ei "manual|version|disk_size|ram" || true
+          echo "=== what install.sh would decide ==="
+          docker exec envtest sh -c 'v=$(printf "%s" "$MANUAL" | tr -d " ""); case "${v,,}" in y|yes|true|1|on|enable|enabled) echo "MANUAL=$MANUAL -> enabled -> MANUAL INSTALL";; *) echo "MANUAL=$MANUAL -> not enabled -> AUTOMATED";; esac' || true
+          docker rm -f envtest || true
+
       - name: start container
         run: |
           set -eux
